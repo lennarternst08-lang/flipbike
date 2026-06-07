@@ -1,0 +1,166 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    function isAdmin() {
+      return isAuthenticated() && 
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' || 
+         (request.auth.token.email == "lennarternst08@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+    
+    function isValidBike(data) {
+      return hasRequiredFields(['id', 'name', 'status', 'purchasePrice', 'purchaseDate', 'timeSpentSeconds', 'lastModified', 'expenses', 'checklist', 'notes', 'photos', 'userId']) &&
+             data.id is string &&
+             data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
+             data.status in ["Zu reparieren", "Inseriert", "Verkauft", "Infrastruktur", "Material"] &&
+             data.purchasePrice is number &&
+             data.timeSpentSeconds is number &&
+             data.userId == request.auth.uid;
+    }
+
+    function isValidInventoryItem(data) {
+      return hasRequiredFields(['id', 'name', 'category', 'pricePerUnit', 'quantity', 'sourceId', 'purchaseDate', 'userId']) &&
+             data.id is string &&
+             data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
+             data.category in ["part", "consumable", "machinery"] &&
+             data.pricePerUnit is number &&
+             data.quantity is number &&
+             data.sourceId is string &&
+             data.userId == request.auth.uid;
+    }
+
+    function isValidTodo(data) {
+      return hasRequiredFields(['id', 'text', 'completed', 'userId']) &&
+             data.id is string &&
+             data.text is string && data.text.size() > 0 && data.text.size() < 500 &&
+             data.completed is bool &&
+             (!('createdAt' in data) || data.createdAt is number) &&
+             data.userId == request.auth.uid;
+    }
+
+    function isValidLog(data) {
+      return hasRequiredFields(['id', 'timestamp', 'message', 'module', 'userId']) &&
+             data.id is string &&
+             data.timestamp is number &&
+             data.message is string && data.message.size() < 1000 &&
+             data.module in ["tracking", "workshop", "stopwatch", "system"] &&
+             data.userId == request.auth.uid;
+    }
+
+    function isValidServiceRequest(data) {
+      return hasRequiredFields(['id', 'name', 'issue', 'dropoffTime', 'status', 'userId']) &&
+             data.id is string &&
+             data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
+             data.issue is string && data.issue.size() > 0 && data.issue.size() < 500 &&
+             data.dropoffTime is string && data.dropoffTime.size() < 100 &&
+             data.status in ["Ausstehend", "Angenommen", "In Bearbeitung", "Fertig", "Abgeholt"] &&
+             (!('phone' in data) || (data.phone is string && data.phone.size() < 50)) &&
+             (!('notes' in data) || (data.notes is string && data.notes.size() < 1000)) &&
+             data.userId == request.auth.uid;
+    }
+
+    function isValidReceipt(data) {
+      return hasRequiredFields(['id', 'bikeId', 'referenceId', 'referenceType', 'fileUrl', 'fileName', 'fileType', 'uploadedAt', 'userId']) &&
+             data.id is string &&
+             data.bikeId is string &&
+             data.referenceId is string &&
+             data.referenceType in ["bike_purchase", "expense", "infrastructure", "material", "order"] &&
+             data.fileUrl is string && data.fileUrl.size() > 0 && data.fileUrl.size() <= 1500000 &&
+             data.fileName is string && data.fileName.size() > 0 && data.fileName.size() < 255 &&
+             data.fileType is string && data.fileType.size() > 0 && data.fileType.size() < 100 &&
+             data.uploadedAt is number &&
+             data.userId == request.auth.uid;
+    }
+
+    function isValidOrder(data) {
+      return hasRequiredFields(['id', 'name', 'totalPrice', 'date', 'userId']) &&
+             data.id is string &&
+             data.name is string && data.name.size() > 0 &&
+             data.totalPrice is number &&
+             data.date is string &&
+             data.userId == request.auth.uid;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+    
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow write: if isAdmin();
+    }
+
+    match /orders/{orderId} {
+      allow read: if isAuthenticated() && (!('userId' in resource.data) || resource.data.userId == request.auth.uid || isAdmin());
+      allow create: if isAuthenticated() && isValidOrder(request.resource.data);
+      allow update: if isAuthenticated() && isValidOrder(request.resource.data) && (!('userId' in resource.data) || resource.data.userId == request.auth.uid || isAdmin());
+      allow delete: if isAuthenticated() && (!('userId' in resource.data) || resource.data.userId == request.auth.uid || isAdmin());
+    }
+
+    match /bikes/{bikeId} {
+      allow read: if isAuthenticated() && (!('userId' in resource.data) || resource.data.userId == request.auth.uid || isAdmin());
+      allow create: if isAuthenticated() && isValidBike(request.resource.data);
+      allow update: if isAuthenticated() && isValidBike(request.resource.data) && (!('userId' in resource.data) || resource.data.userId == request.auth.uid || isAdmin());
+      allow delete: if isAuthenticated() && (!('userId' in resource.data) || resource.data.userId == request.auth.uid || isAdmin());
+    }
+    
+    match /todos/{todoId} {
+      allow read: if isAuthenticated() && (!('userId' in resource.data) || resource.data.userId == request.auth.uid || isAdmin());
+      allow create: if isAuthenticated() && isValidTodo(request.resource.data);
+      allow update: if isAuthenticated() && isValidTodo(request.resource.data) && (!('userId' in resource.data) || resource.data.userId == request.auth.uid || isAdmin());
+      allow delete: if isAuthenticated() && (!('userId' in resource.data) || resource.data.userId == request.auth.uid || isAdmin());
+    }
+    
+    match /logs/{logId} {
+      allow read: if isAuthenticated() && (!('userId' in resource.data) || resource.data.userId == request.auth.uid || isAdmin());
+      allow create: if isAuthenticated() && isValidLog(request.resource.data);
+      allow update: if isAuthenticated() && isValidLog(request.resource.data) && (!('userId' in resource.data) || resource.data.userId == request.auth.uid || isAdmin());
+      allow delete: if isAuthenticated() && (!('userId' in resource.data) || resource.data.userId == request.auth.uid || isAdmin());
+    }
+
+    match /serviceRequests/{requestId} {
+      allow read: if isAuthenticated() && (!('userId' in resource.data) || resource.data.userId == request.auth.uid || isAdmin());
+      allow create: if isAuthenticated() && isValidServiceRequest(request.resource.data);
+      allow update: if isAuthenticated() && isValidServiceRequest(request.resource.data) && (!('userId' in resource.data) || resource.data.userId == request.auth.uid || isAdmin());
+      allow delete: if isAuthenticated() && (!('userId' in resource.data) || resource.data.userId == request.auth.uid || isAdmin());
+    }
+
+    match /receipts/{receiptId} {
+      allow read: if isAuthenticated() && (!('userId' in resource.data) || resource.data.userId == request.auth.uid || isAdmin());
+      allow create: if isAuthenticated() && isValidReceipt(request.resource.data);
+      allow update: if isAuthenticated() && isValidReceipt(request.resource.data) && (!('userId' in resource.data) || resource.data.userId == request.auth.uid || isAdmin());
+      allow delete: if isAuthenticated() && (!('userId' in resource.data) || resource.data.userId == request.auth.uid || isAdmin());
+    }
+
+    match /inventoryItems/{itemId} {
+      allow read: if isAuthenticated() && (!('userId' in resource.data) || resource.data.userId == request.auth.uid || isAdmin());
+      allow create: if isAuthenticated() && isValidInventoryItem(request.resource.data);
+      allow update: if isAuthenticated() && isValidInventoryItem(request.resource.data) && (!('userId' in resource.data) || resource.data.userId == request.auth.uid || isAdmin());
+      allow delete: if isAuthenticated() && (!('userId' in resource.data) || resource.data.userId == request.auth.uid || isAdmin());
+    }
+  }
+}

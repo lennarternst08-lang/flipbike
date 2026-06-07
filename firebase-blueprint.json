@@ -1,0 +1,166 @@
+{
+  "entities": {
+    "Expense": {
+      "title": "Expense",
+      "description": "An expense related to a bike",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "description": { "type": "string" },
+        "amount": { "type": "number" },
+        "date": { "type": "string" }
+      },
+      "required": ["id", "description", "amount", "date"]
+    },
+    "ChecklistItem": {
+      "title": "ChecklistItem",
+      "description": "A checklist item for a bike",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "text": { "type": "string" },
+        "completed": { "type": "boolean" }
+      },
+      "required": ["id", "text", "completed"]
+    },
+    "Bike": {
+      "title": "Bike",
+      "description": "A bike project",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "status": { "type": "string", "enum": ["Zu reparieren", "Inseriert", "Verkauft", "Infrastruktur", "Material"] },
+        "purchasePrice": { "type": "number" },
+        "purchaseDate": { "type": "string" },
+        "sellingPrice": { "type": ["number", "null"] },
+        "saleDate": { "type": ["string", "null"] },
+        "targetSellingPrice": { "type": ["number", "null"] },
+        "timeSpentSeconds": { "type": "number" },
+        "startTime": { "type": "number" },
+        "lastModified": { "type": "number" },
+        "expenses": { "type": "array", "items": { "$ref": "#/entities/Expense" } },
+        "checklist": { "type": "array", "items": { "$ref": "#/entities/ChecklistItem" } },
+        "notes": { "type": "string" },
+        "photos": { "type": "array", "items": { "type": "string" } },
+        "workLogs": { 
+          "type": "array", 
+          "items": { 
+            "type": "object",
+            "properties": {
+              "id": { "type": "string" },
+              "timestamp": { "type": "string" },
+              "durationSeconds": { "type": "number" }
+            },
+            "required": ["id", "timestamp", "durationSeconds"]
+          } 
+        },
+        "userId": { "type": "string" }
+      },
+      "required": ["id", "name", "status", "purchasePrice", "purchaseDate", "timeSpentSeconds", "lastModified", "expenses", "checklist", "notes", "photos", "userId"]
+    },
+    "InventoryItem": {
+      "title": "InventoryItem",
+      "description": "An item in the material inventory",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "category": { "type": "string", "enum": ["part", "consumable", "machinery"] },
+        "pricePerUnit": { "type": "number" },
+        "quantity": { "type": "number" },
+        "sourceId": { "type": "string" },
+        "purchaseDate": { "type": "string" },
+        "userId": { "type": "string" }
+      },
+      "required": ["id", "name", "category", "pricePerUnit", "quantity", "sourceId", "purchaseDate", "userId"]
+    },
+    "DailyTodo": {
+      "title": "DailyTodo",
+      "description": "A daily todo item",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "text": { "type": "string" },
+        "completed": { "type": "boolean" },
+        "createdAt": { "type": "number" },
+        "linkedBikeId": { "type": "string" },
+        "userId": { "type": "string" }
+      },
+      "required": ["id", "text", "completed", "userId"]
+    },
+    "Log": {
+      "title": "Log",
+      "description": "An activity log entry",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "timestamp": { "type": "number" },
+        "message": { "type": "string" },
+        "module": { "type": "string", "enum": ["tracking", "workshop", "stopwatch", "system"] },
+        "revertAction": { "type": "object" },
+        "userId": { "type": "string" }
+      },
+      "required": ["id", "timestamp", "message", "module", "userId"]
+    },
+    "Receipt": {
+      "title": "Receipt",
+      "description": "A receipt uploaded for a bike, expense, or infrastructure",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "bikeId": { "type": "string" },
+        "referenceId": { "type": "string" },
+        "referenceType": { "type": "string", "enum": ["bike_purchase", "expense", "infrastructure"] },
+        "fileUrl": { "type": "string" },
+        "fileName": { "type": "string" },
+        "fileType": { "type": "string" },
+        "uploadedAt": { "type": "number" },
+        "userId": { "type": "string" }
+      },
+      "required": ["id", "bikeId", "referenceId", "referenceType", "fileUrl", "fileName", "fileType", "uploadedAt", "userId"]
+    },
+    "ServiceRequest": {
+      "title": "ServiceRequest",
+      "description": "A service request from a neighbor or customer",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "issue": { "type": "string" },
+        "dropoffTime": { "type": "string" },
+        "status": { "type": "string", "enum": ["Ausstehend", "Angenommen", "In Bearbeitung", "Fertig", "Abgeholt"] },
+        "phone": { "type": "string" },
+        "notes": { "type": "string" },
+        "userId": { "type": "string" }
+      },
+      "required": ["id", "name", "issue", "dropoffTime", "status", "userId"]
+    }
+  },
+  "firestore": {
+    "/bikes/{bikeId}": {
+      "schema": { "$ref": "#/entities/Bike" },
+      "description": "User's bikes"
+    },
+    "/todos/{todoId}": {
+      "schema": { "$ref": "#/entities/DailyTodo" },
+      "description": "User's daily todos"
+    },
+    "/logs/{logId}": {
+      "schema": { "$ref": "#/entities/Log" },
+      "description": "User's activity logs"
+    },
+    "/serviceRequests/{requestId}": {
+      "schema": { "$ref": "#/entities/ServiceRequest" },
+      "description": "User's service requests"
+    },
+    "/inventoryItems/{itemId}": {
+      "schema": { "$ref": "#/entities/InventoryItem" },
+      "description": "User's material inventory items"
+    },
+    "/receipts/{receiptId}": {
+      "schema": { "$ref": "#/entities/Receipt" },
+      "description": "User's receipts"
+    }
+  }
+}
