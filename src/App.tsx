@@ -1218,7 +1218,8 @@ function App() {
       checklist: [],
       notes: newBikeData.notes || '',
       photos: [],
-      userId: auth.currentUser?.uid
+      userId: auth.currentUser?.uid,
+      acquisitionSource: newBikeData.acquisitionSource || undefined
     };
     
     // Optimistically update local state
