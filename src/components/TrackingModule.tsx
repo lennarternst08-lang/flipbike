@@ -1202,8 +1202,8 @@ export function TrackingModule({
           </div>
         )}
         <CardContent className="pt-0 px-0">
-          <div className="overflow-auto max-h-[70vh] md:max-h-none">
-            <table className="w-full text-sm text-left text-slate-300 min-w-[800px] border-separate border-spacing-0">
+          <div className="overflow-x-auto max-h-[70vh] md:max-h-none">
+            <table className="w-full text-sm text-left text-slate-300 border-separate border-spacing-0">
               <thead className="text-xs text-slate-400 uppercase bg-slate-800 sticky top-0 z-30">
                 <tr>
                   <th className="px-2 py-3 cursor-pointer hover:bg-slate-700/50 sticky left-0 z-40 bg-slate-800 border-r border-slate-700/50 min-w-[140px]" onClick={() => handleSort('name')}>Fahrrad ({filteredBikes.length}) <SortIcon field="name" /></th>
@@ -1269,19 +1269,46 @@ export function TrackingModule({
                               {openMenuId === bike.id && (
                                 <>
                                   <div className="fixed inset-0 z-0" onClick={(e) => { e.stopPropagation(); setOpenMenuId(null); }}></div>
-                                  <div className="absolute left-0 top-8 z-10 w-48 bg-slate-800 border border-slate-700 rounded-md shadow-lg py-1">
-                                    <button 
+                                  <div className="absolute left-0 top-8 z-10 w-52 bg-slate-800 border border-slate-700 rounded-md shadow-lg py-1">
+                                    <button
                                       onClick={(e) => { e.stopPropagation(); setRenameBikeId(bike.id); setRenameValue(bike.name); setOpenMenuId(null); }}
                                       className="w-full text-left px-4 py-2 text-sm text-slate-300 hover:bg-slate-700 hover:text-white flex items-center"
                                     >
                                       <Edit2 className="w-3 h-3 mr-2" /> Umbenennen
                                     </button>
-                                    <button 
-                                      onClick={(e) => { 
-                                          e.stopPropagation(); 
+                                    {/* Akquise-Quelle */}
+                                    <div className="px-3 py-2">
+                                      <p className="text-[10px] uppercase font-bold text-slate-500 tracking-wider mb-1.5">Akquise-Quelle</p>
+                                      <div className="flex gap-1">
+                                        <button
+                                          onClick={(e) => { e.stopPropagation(); updateBike(bike.id, { acquisitionSource: 'flyer' }); setOpenMenuId(null); }}
+                                          className={`flex-1 flex items-center justify-center gap-1 px-2 py-1.5 text-xs font-medium rounded transition-colors ${
+                                            (bike.acquisitionSource === 'flyer' || !bike.acquisitionSource)
+                                              ? 'bg-emerald-600 text-white'
+                                              : 'bg-slate-700 text-slate-400 hover:text-white hover:bg-slate-600'
+                                          }`}
+                                        >
+                                          <Megaphone className="w-3 h-3" /> Flyer
+                                        </button>
+                                        <button
+                                          onClick={(e) => { e.stopPropagation(); updateBike(bike.id, { acquisitionSource: 'kleinanzeigen' }); setOpenMenuId(null); }}
+                                          className={`flex-1 flex items-center justify-center gap-1 px-2 py-1.5 text-xs font-medium rounded transition-colors ${
+                                            bike.acquisitionSource === 'kleinanzeigen'
+                                              ? 'bg-blue-600 text-white'
+                                              : 'bg-slate-700 text-slate-400 hover:text-white hover:bg-slate-600'
+                                          }`}
+                                        >
+                                          <Monitor className="w-3 h-3" /> KA
+                                        </button>
+                                      </div>
+                                    </div>
+                                    <div className="h-px bg-slate-700 my-1"></div>
+                                    <button
+                                      onClick={(e) => {
+                                          e.stopPropagation();
                                           const isHidden = bike.status === 'Infrastruktur' ? (bike.hiddenInWorkshop !== false) : (bike.hiddenInWorkshop === true);
                                           updateBike(bike.id, { hiddenInWorkshop: !isHidden });
-                                          setOpenMenuId(null); 
+                                          setOpenMenuId(null);
                                       }}
                                       className="w-full text-left px-4 py-2 text-sm text-slate-300 hover:bg-slate-700 hover:text-white flex items-center"
                                     >
@@ -1291,7 +1318,7 @@ export function TrackingModule({
                                       })()}
                                     </button>
                                     <div className="h-px bg-slate-700 my-1"></div>
-                                    <button 
+                                    <button
                                       onClick={(e) => { e.stopPropagation(); deleteBike(bike.id); setOpenMenuId(null); }}
                                       className="w-full text-left px-4 py-2 text-sm text-red-400 hover:bg-slate-700 hover:text-red-300 flex items-center"
                                     >
