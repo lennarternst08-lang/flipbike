@@ -78,6 +78,7 @@ export interface Bike {
   userId?: string;
   isStandalone?: boolean;
   linkedFromId?: string;
+  acquisitionSource?: 'flyer' | 'kleinanzeigen';
 }
 
 export type FlyerAreaStatus = 'geplant' | 'erledigt';

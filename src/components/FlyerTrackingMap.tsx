@@ -21,8 +21,8 @@ ChartJS.register(CategoryScale, LinearScale, BarElement, Title, ChartTooltip, Le
 
 type Mode = 'idle' | 'draw' | 'exclude' | 'delete';
 
-const CENTER_LAT = 52.2289;
-const CENTER_LNG = 10.5332;
+const CENTER_LAT = 52.2475;
+const CENTER_LNG = 10.4898;
 const todayISO = () => new Date().toISOString().split('T')[0];
 
 // --- Geometrie: Polygonfläche in m² (sphärisch) ---

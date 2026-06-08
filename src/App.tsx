@@ -1486,7 +1486,8 @@ function App() {
            bp: "buyPrice", sp: "sellPrice",
            exp: "expenses array (materials used from inventory or external: a=amount, d=desc, id=invId, dt=date)",
            tz: "timeSpentSeconds",
-           rcv: "receivedAt (Eingang)", lst: "listedAt (inseriert am)", sld: "soldAt (verkauft am)"
+           rcv: "receivedAt (Eingang)", lst: "listedAt (inseriert am)", sld: "soldAt (verkauft am)",
+           acq: "acquisitionSource: flyer=Flyer-Akquise, kleinanzeigen=Kleinanzeigen, null=unbekannt"
          },
          inv: { iq: "initialQuantity", q: "currentQuantity", c: "pricePerUnit", oId: "Group order id" },
          go: { c: "totalCost", n: "name", dt: "date" },
@@ -1512,6 +1513,7 @@ function App() {
         rcv: b.receivedAt || null,
         lst: b.listedAt || null,
         sld: b.soldAt || null,
+        acq: b.acquisitionSource || null,
         notes: b.notes,
         todos: b.checklist.filter(c => !c.completed).map(c => c.text)
       })),
@@ -1532,7 +1534,20 @@ function App() {
       flyer: {
         areas: flyerAreas.length,
         distd: flyerAreas.reduce((sum: number, a: any) => sum + (a.flyerCount || 0), 0),
-        excHouses: flyerExc.length
+        excHouses: flyerExc.length,
+        byStatus: {
+          erledigt: flyerAreas.filter((a: any) => a.status === 'erledigt' || !a.status).length,
+          geplant: flyerAreas.filter((a: any) => a.status === 'geplant').length,
+        },
+        bikesFromFlyer: bikes.filter(b => b.acquisitionSource === 'flyer').length,
+        bikesFromKleinanzeigen: bikes.filter(b => b.acquisitionSource === 'kleinanzeigen').length,
+        areaDetails: flyerAreas.map((a: any) => ({
+          name: a.name || '',
+          flyerCount: a.flyerCount || 0,
+          date: a.distributedDate || null,
+          status: a.status || 'erledigt',
+          note: a.note || '',
+        }))
       }
     };
 

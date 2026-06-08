@@ -17,7 +17,7 @@ import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { formatCurrency, formatTime } from '../lib/utils';
-import { TrendingUp, Clock, Wallet, Plus, Search, Filter, ArrowUpDown, ArrowUp, ArrowDown, MoreVertical, Trash2, Edit2, Star, ChevronDown, ChevronUp, X, Check, FileCheck, Eye, EyeOff, Play, Pause, RotateCcw } from 'lucide-react';
+import { TrendingUp, Clock, Wallet, Plus, Search, Filter, ArrowUpDown, ArrowUp, ArrowDown, MoreVertical, Trash2, Edit2, Star, ChevronDown, ChevronUp, X, Check, FileCheck, Eye, EyeOff, Play, Pause, RotateCcw, Megaphone, Monitor } from 'lucide-react';
 import { ReceiptUploader } from './ReceiptUploader';
 import { doc, deleteDoc } from 'firebase/firestore';
 import { db } from '../firebase';
@@ -164,7 +164,8 @@ export function TrackingModule({
     purchaseDate: new Date().toISOString().split('T')[0],
     purchasePrice: 0,
     targetSellingPrice: 0,
-    status: 'Zu reparieren'
+    status: 'Zu reparieren',
+    acquisitionSource: 'flyer'
   });
 
   const [isReady, setIsReady] = useState(!initialScrollPos);
@@ -352,7 +353,8 @@ export function TrackingModule({
       purchaseDate: new Date().toISOString().split('T')[0],
       purchasePrice: 0,
       targetSellingPrice: 0,
-      status: 'Zu reparieren'
+      status: 'Zu reparieren',
+      acquisitionSource: 'flyer'
     });
   };
 
@@ -1206,6 +1208,7 @@ export function TrackingModule({
                 <tr>
                   <th className="px-2 py-3 cursor-pointer hover:bg-slate-700/50 sticky left-0 z-40 bg-slate-800 border-r border-slate-700/50 min-w-[140px]" onClick={() => handleSort('name')}>Fahrrad ({filteredBikes.length}) <SortIcon field="name" /></th>
                   <th className="px-2 py-3 border-b border-slate-700/50">Beleg</th>
+                  <th className="px-1 py-3 border-b border-slate-700/50 w-8 text-center" title="Akquise-Quelle (FL = Flyer, KA = Kleinanzeigen)">Src</th>
                   <th className="px-3 py-3 cursor-pointer hover:bg-slate-700/50 border-b border-slate-700/50" onClick={() => handleSort('status')}>Status <SortIcon field="status" /></th>
                   <th className="px-3 py-3 cursor-pointer hover:bg-slate-700/50 border-b border-slate-700/50" onClick={() => handleSort('purchaseDate')}>Ankauf <SortIcon field="purchaseDate" /></th>
                   <th className="px-3 py-3 cursor-pointer hover:bg-slate-700/50 border-b border-slate-700/50" onClick={() => handleSort('purchasePrice')}>EK (€) <SortIcon field="purchasePrice" /></th>
@@ -1328,12 +1331,24 @@ export function TrackingModule({
                         </div>
                       </td>
                       <td className="px-2 py-2">
-                        <ReceiptUploader 
+                        <ReceiptUploader
                           bikeId={bike.id}
                           referenceId={bike.id}
                           referenceType={bike.status === 'Infrastruktur' ? 'infrastructure' : 'bike_purchase'}
                           existingReceipt={receipts.find(r => r.referenceId === bike.id)}
                         />
+                      </td>
+                      <td className="px-1 py-2 text-center w-8">
+                        {bike.acquisitionSource === 'flyer' && (
+                          <span title="Flyer-Akquise">
+                            <Megaphone className="w-3.5 h-3.5 text-emerald-400 inline-block" />
+                          </span>
+                        )}
+                        {bike.acquisitionSource === 'kleinanzeigen' && (
+                          <span title="Kleinanzeigen">
+                            <Monitor className="w-3.5 h-3.5 text-blue-400 inline-block" />
+                          </span>
+                        )}
                       </td>
                       <td className="px-3 py-2">
                         <select
@@ -2250,6 +2265,36 @@ export function TrackingModule({
                   </div>
                 </div>
               </div>
+              {/* Akquise-Quelle: nur bei Fahrrädern (nicht Material/Infrastruktur) */}
+              {newBikeData.status !== 'Material' && newBikeData.status !== 'Infrastruktur' && (
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-slate-400">Akquise-Quelle</label>
+                  <div className="flex bg-slate-800 p-1 rounded-lg border border-slate-700">
+                    <button
+                      type="button"
+                      onClick={() => setNewBikeData({...newBikeData, acquisitionSource: 'flyer'})}
+                      className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
+                        (newBikeData.acquisitionSource ?? 'flyer') === 'flyer'
+                          ? 'bg-emerald-600 text-white shadow'
+                          : 'text-slate-400 hover:text-slate-300'
+                      }`}
+                    >
+                      <Megaphone className="w-3.5 h-3.5" /> Flyer-Akquise
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setNewBikeData({...newBikeData, acquisitionSource: 'kleinanzeigen'})}
+                      className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
+                        newBikeData.acquisitionSource === 'kleinanzeigen'
+                          ? 'bg-blue-600 text-white shadow'
+                          : 'text-slate-400 hover:text-slate-300'
+                      }`}
+                    >
+                      <Monitor className="w-3.5 h-3.5" /> Kleinanzeigen
+                    </button>
+                  </div>
+                </div>
+              )}
               <div className="flex justify-end space-x-3 pt-4">
                 <Button variant="outline" onClick={() => setIsAddModalOpen(false)}>
                   Abbrechen
