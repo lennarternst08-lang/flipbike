@@ -1338,7 +1338,9 @@ export function TrackingModule({
                                }
                             }}
                             className={`font-medium transition-colors text-left flex flex-col justify-center truncate md:whitespace-nowrap md:overflow-visible ${
-                              receipts.find(r => r.referenceId === bike.id) || bike.id.startsWith('monthly-mat-') ? 'text-emerald-400 hover:text-emerald-300' : 'text-red-400 hover:text-red-300'
+                              bike.status === 'Infrastruktur' || bike.status === 'Material' || bike.id.startsWith('monthly-mat-')
+                                ? (receipts.find(r => r.referenceId === bike.id) || bike.id.startsWith('monthly-mat-') ? 'text-emerald-400 hover:text-emerald-300' : 'text-red-400 hover:text-red-300')
+                                : 'text-slate-200 hover:text-white'
                             }`}
                             title={bike.name}
                           >
@@ -1358,12 +1360,16 @@ export function TrackingModule({
                         </div>
                       </td>
                       <td className="px-2 py-2">
-                        <ReceiptUploader
-                          bikeId={bike.id}
-                          referenceId={bike.id}
-                          referenceType={bike.status === 'Infrastruktur' ? 'infrastructure' : 'bike_purchase'}
-                          existingReceipt={receipts.find(r => r.referenceId === bike.id)}
-                        />
+                        {(bike.status === 'Infrastruktur' || bike.status === 'Material' || bike.id.startsWith('monthly-mat-')) ? (
+                          <ReceiptUploader
+                            bikeId={bike.id}
+                            referenceId={bike.id}
+                            referenceType={bike.status === 'Infrastruktur' ? 'infrastructure' : 'material'}
+                            existingReceipt={receipts.find(r => r.referenceId === bike.id)}
+                          />
+                        ) : (
+                          <span className="text-slate-600 text-xs">–</span>
+                        )}
                       </td>
                       <td className="px-1 py-2 text-center w-8">
                         {bike.acquisitionSource === 'flyer' && (
