@@ -21,8 +21,9 @@ ChartJS.register(CategoryScale, LinearScale, BarElement, Title, ChartTooltip, Le
 
 type Mode = 'idle' | 'draw' | 'exclude' | 'delete';
 
-const CENTER_LAT = 52.2475;
-const CENTER_LNG = 10.4898;
+const CENTER_LAT = 52.2689; // Braunschweig Mitte – wird sofort durch Auto-Zentrierung überschrieben
+const CENTER_LNG = 10.5268;
+const HOME_ADDRESS = 'Helene-Engelbrecht-Straße 21, 38124 Braunschweig';
 const todayISO = () => new Date().toISOString().split('T')[0];
 
 // --- Geometrie: Polygonfläche in m² (sphärisch) ---
@@ -123,6 +124,36 @@ export function FlyerTrackingMap() {
   useEffect(() => {
     localStorage.setItem('flyerTracking_settings', JSON.stringify({ costPerFlyer, customersWon, marginPerCustomer }));
   }, [costPerFlyer, customersWon, marginPerCustomer]);
+
+  // Auto-Zentrierung beim ersten Laden:
+  // 1) Gebiete vorhanden → letztes hinzugefügtes Gebiet (Schwerpunkt)
+  // 2) Keine Gebiete → Heimadresse via Nominatim geocoden
+  const [hasAutocentered, setHasAutocentered] = useState(false);
+  useEffect(() => {
+    if (hasAutocentered) return;
+    if (areas.length > 0) {
+      const latest = [...areas].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))[0];
+      if (latest.points.length > 0) {
+        const lat = latest.points.reduce((s, p) => s + p[0], 0) / latest.points.length;
+        const lng = latest.points.reduce((s, p) => s + p[1], 0) / latest.points.length;
+        setFlyTarget({ lat, lng, ts: Date.now() });
+        setHasAutocentered(true);
+      }
+    } else {
+      // Kein Gebiet vorhanden → Heimadresse geocoden (einmalig)
+      setHasAutocentered(true); // sofort sperren damit kein zweiter Request kommt
+      fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(HOME_ADDRESS)}`, {
+        headers: { 'Accept-Language': 'de' },
+      })
+        .then((r) => r.json())
+        .then((data) => {
+          if (data?.[0]) {
+            setFlyTarget({ lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon), ts: Date.now() });
+          }
+        })
+        .catch(() => {/* Stille Fehlerbehandlung – Karte bleibt auf Fallback-Mitte */});
+    }
+  }, [areas, hasAutocentered]);
 
   // --- Datenquelle: Firestore (eingeloggt) oder localStorage (offline) ---
   useEffect(() => {
