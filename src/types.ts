@@ -80,6 +80,27 @@ export interface Bike {
   linkedFromId?: string;
 }
 
+export type FlyerAreaStatus = 'geplant' | 'erledigt';
+
+export interface DistributedArea {
+  id: string;
+  points: [number, number][];
+  flyerCount: number;
+  name?: string;
+  note?: string;
+  distributedDate?: string; // ISO yyyy-mm-dd
+  status?: FlyerAreaStatus;
+  createdAt?: number;
+  userId?: string;
+}
+
+export interface ExcludedHouse {
+  id: string;
+  point: [number, number];
+  createdAt?: number;
+  userId?: string;
+}
+
 export interface DailyTodo {
   id: string;
   text: string;

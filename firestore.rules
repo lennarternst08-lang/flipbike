@@ -96,6 +96,26 @@ service cloud.firestore {
              data.userId == request.auth.uid;
     }
 
+    function isValidFlyerArea(data) {
+      return hasRequiredFields(['id', 'pointsJson', 'flyerCount', 'userId']) &&
+             data.id is string &&
+             data.pointsJson is string && data.pointsJson.size() < 100000 &&
+             data.flyerCount is number &&
+             (!('name' in data) || (data.name is string && data.name.size() < 200)) &&
+             (!('note' in data) || (data.note is string && data.note.size() < 1000)) &&
+             (!('distributedDate' in data) || (data.distributedDate is string && data.distributedDate.size() < 30)) &&
+             (!('status' in data) || data.status in ["geplant", "erledigt"]) &&
+             data.userId == request.auth.uid;
+    }
+
+    function isValidFlyerHouse(data) {
+      return hasRequiredFields(['id', 'lat', 'lng', 'userId']) &&
+             data.id is string &&
+             data.lat is number &&
+             data.lng is number &&
+             data.userId == request.auth.uid;
+    }
+
     function isValidOrder(data) {
       return hasRequiredFields(['id', 'name', 'totalPrice', 'date', 'userId']) &&
              data.id is string &&
@@ -160,6 +180,20 @@ service cloud.firestore {
       allow read: if isAuthenticated() && (!('userId' in resource.data) || resource.data.userId == request.auth.uid || isAdmin());
       allow create: if isAuthenticated() && isValidInventoryItem(request.resource.data);
       allow update: if isAuthenticated() && isValidInventoryItem(request.resource.data) && (!('userId' in resource.data) || resource.data.userId == request.auth.uid || isAdmin());
+      allow delete: if isAuthenticated() && (!('userId' in resource.data) || resource.data.userId == request.auth.uid || isAdmin());
+    }
+
+    match /flyerAreas/{areaId} {
+      allow read: if isAuthenticated() && (!('userId' in resource.data) || resource.data.userId == request.auth.uid || isAdmin());
+      allow create: if isAuthenticated() && isValidFlyerArea(request.resource.data);
+      allow update: if isAuthenticated() && isValidFlyerArea(request.resource.data) && (!('userId' in resource.data) || resource.data.userId == request.auth.uid || isAdmin());
+      allow delete: if isAuthenticated() && (!('userId' in resource.data) || resource.data.userId == request.auth.uid || isAdmin());
+    }
+
+    match /flyerHouses/{houseId} {
+      allow read: if isAuthenticated() && (!('userId' in resource.data) || resource.data.userId == request.auth.uid || isAdmin());
+      allow create: if isAuthenticated() && isValidFlyerHouse(request.resource.data);
+      allow update: if isAuthenticated() && isValidFlyerHouse(request.resource.data) && (!('userId' in resource.data) || resource.data.userId == request.auth.uid || isAdmin());
       allow delete: if isAuthenticated() && (!('userId' in resource.data) || resource.data.userId == request.auth.uid || isAdmin());
     }
   }
