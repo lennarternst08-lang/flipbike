@@ -6,6 +6,7 @@ export interface Expense {
   amount: number;
   date: string;
   sourceInventoryId?: string;
+  category?: 'kleinanzeigen'; // markiert Inserat-Gebühren (Kleinanzeigen), damit sie zählbar/erkennbar bleiben
 }
 
 export interface GroupOrder {
@@ -100,6 +101,16 @@ export interface ExcludedHouse {
   point: [number, number];
   createdAt?: number;
   userId?: string;
+}
+
+export interface FlyerHistoryEntry {
+  id: string;
+  ts: string;            // ISO timestamp des Log-Eintrags
+  action: 'add' | 'edit' | 'delete';
+  name: string;
+  flyerCount: number;
+  date?: string | null;  // distributedDate des Gebiets
+  status?: FlyerAreaStatus;
 }
 
 export interface DailyTodo {

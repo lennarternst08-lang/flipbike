@@ -8,11 +8,11 @@ import { Bar } from 'react-chartjs-2';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
-import { Download, Map as MapIcon, PenTool, XOctagon, Eraser, Undo2, Check, Search, Upload, Pencil, Euro, BarChart3, Ruler } from 'lucide-react';
+import { Download, Map as MapIcon, PenTool, XOctagon, Eraser, Undo2, Check, Search, Upload, Pencil, Euro, BarChart3, Ruler, History, Magnet, PlusCircle, Trash2 } from 'lucide-react';
 import html2canvas from 'html2canvas';
 import { format, parseISO, subMonths, isSameMonth } from 'date-fns';
 import { de } from 'date-fns/locale';
-import { DistributedArea, ExcludedHouse, FlyerAreaStatus } from '../types';
+import { DistributedArea, ExcludedHouse, FlyerAreaStatus, FlyerHistoryEntry } from '../types';
 import { auth, db } from '../firebase';
 import { onAuthStateChanged } from 'firebase/auth';
 import { collection, doc, setDoc, deleteDoc, onSnapshot, query, where } from 'firebase/firestore';
@@ -82,6 +82,9 @@ export function FlyerTrackingMap() {
   const [mode, setMode] = useState<Mode>('idle');
   const [drawingPoints, setDrawingPoints] = useState<[number, number][]>([]);
   const [cursorPos, setCursorPos] = useState<[number, number] | null>(null);
+  const [snapPoint, setSnapPoint] = useState<[number, number] | null>(null); // aktives Andocken
+  const [snapEnabled, setSnapEnabled] = useState(true);                       // Andocken an/aus
+  const [history, setHistory] = useState<FlyerHistoryEntry[]>([]);            // Flyer-Verteilungs-Historie
 
   const [showModal, setShowModal] = useState(false);
   const [editingAreaId, setEditingAreaId] = useState<string | null>(null);
@@ -109,7 +112,7 @@ export function FlyerTrackingMap() {
   // Auth-Status beobachten
   useEffect(() => onAuthStateChanged(auth, (u) => setUid(u?.uid ?? null)), []);
 
-  // Kosten-Einstellungen laden
+  // Kosten-Einstellungen + Historie laden
   useEffect(() => {
     const saved = localStorage.getItem('flyerTracking_settings');
     if (saved) {
@@ -120,10 +123,35 @@ export function FlyerTrackingMap() {
         setMarginPerCustomer(s.marginPerCustomer ?? '');
       } catch {}
     }
+    const savedHist = localStorage.getItem('flyerTracking_history');
+    if (savedHist) { try { setHistory(JSON.parse(savedHist)); } catch {} }
+    const savedSnap = localStorage.getItem('flyerTracking_snapEnabled');
+    if (savedSnap !== null) setSnapEnabled(savedSnap === 'true');
   }, []);
+
+  // Historie-Eintrag anhängen (localStorage = Quelle für KI-Export)
+  const appendHistory = (action: FlyerHistoryEntry['action'], area: DistributedArea) => {
+    const entry: FlyerHistoryEntry = {
+      id: `${Date.now()}-${action}`,
+      ts: new Date().toISOString(),
+      action,
+      name: area.name || '',
+      flyerCount: area.flyerCount || 0,
+      date: area.distributedDate || null,
+      status: area.status || 'erledigt',
+    };
+    setHistory((prev) => {
+      const next = [...prev, entry].slice(-500); // Deckel: letzte 500 Einträge
+      localStorage.setItem('flyerTracking_history', JSON.stringify(next));
+      return next;
+    });
+  };
   useEffect(() => {
     localStorage.setItem('flyerTracking_settings', JSON.stringify({ costPerFlyer, customersWon, marginPerCustomer }));
   }, [costPerFlyer, customersWon, marginPerCustomer]);
+  useEffect(() => {
+    localStorage.setItem('flyerTracking_snapEnabled', String(snapEnabled));
+  }, [snapEnabled]);
 
   // Auto-Zentrierung beim ersten Laden:
   // 1) Gebiete vorhanden → letztes hinzugefügtes Gebiet (Schwerpunkt)
@@ -213,7 +241,7 @@ export function FlyerTrackingMap() {
 
   // Zeichen-Reststände aufräumen
   useEffect(() => {
-    if (mode !== 'draw') { setDrawingPoints([]); setCursorPos(null); }
+    if (mode !== 'draw') { setDrawingPoints([]); setCursorPos(null); setSnapPoint(null); }
   }, [mode]);
 
   // --- Persistenz-Helfer ---
@@ -226,8 +254,10 @@ export function FlyerTrackingMap() {
     }
   };
   const removeArea = (id: string) => {
+    const area = areas.find((a) => a.id === id);
     if (uid) deleteDoc(doc(db, 'flyerAreas', id)).catch(console.error);
     setAreas((prev) => prev.filter((a) => a.id !== id));
+    if (area) appendHistory('delete', area);
   };
   const addHouse = (point: [number, number]) => {
     const house: ExcludedHouse = { id: Date.now().toString(), point, createdAt: Date.now(), userId: uid ?? undefined };
@@ -258,6 +288,23 @@ export function FlyerTrackingMap() {
   );
 
   // --- Karten-Events ---
+  const SNAP_PX = 16; // Andock-Radius in Pixeln
+
+  // Nächstgelegenen Eckpunkt eines bestehenden Gebiets finden (zum Andocken)
+  const findSnapVertex = (map: any, latlng: any): [number, number] | null => {
+    if (!snapEnabled) return null;
+    const cp = map.latLngToContainerPoint(latlng);
+    let best: [number, number] | null = null;
+    let bestDist = SNAP_PX;
+    for (const a of areas) {
+      for (const p of a.points) {
+        const d = cp.distanceTo(map.latLngToContainerPoint(p));
+        if (d < bestDist) { bestDist = d; best = p; }
+      }
+    }
+    return best;
+  };
+
   const MapEvents = () => {
     const map = useMapEvents({
       click: (e) => {
@@ -265,19 +312,28 @@ export function FlyerTrackingMap() {
         if (mode === 'exclude') {
           addHouse([lat, lng]);
         } else if (mode === 'draw') {
+          // Schließen, wenn nahe am Startpunkt
           if (drawingPoints.length > 2) {
             const dist = map.latLngToContainerPoint(e.latlng).distanceTo(map.latLngToContainerPoint(drawingPoints[0] as [number, number]));
             if (dist < 30) { completePolygon(); return; }
           }
-          setDrawingPoints([...drawingPoints, [lat, lng]]);
+          // Andocken an Eckpunkt eines Nachbargebiets
+          const snap = findSnapVertex(map, e.latlng);
+          setDrawingPoints([...drawingPoints, snap ?? [lat, lng]]);
+          setSnapPoint(null);
         }
       },
       mousemove: (e) => {
         if (mode === 'draw') {
+          // Vorschau Schließen am Startpunkt
           if (drawingPoints.length > 2) {
             const dist = map.latLngToContainerPoint(e.latlng).distanceTo(map.latLngToContainerPoint(drawingPoints[0] as [number, number]));
-            if (dist < 30) { setCursorPos(drawingPoints[0] as [number, number]); return; }
+            if (dist < 30) { setCursorPos(drawingPoints[0] as [number, number]); setSnapPoint(null); return; }
           }
+          // Vorschau Andocken
+          const snap = findSnapVertex(map, e.latlng);
+          if (snap) { setSnapPoint(snap); setCursorPos(snap); return; }
+          setSnapPoint(null);
           setCursorPos([e.latlng.lat, e.latlng.lng]);
         }
       },
@@ -313,10 +369,12 @@ export function FlyerTrackingMap() {
     if (editingAreaId) {
       const existing = areas.find((a) => a.id === editingAreaId);
       if (!existing) return;
-      saveArea({ ...existing, flyerCount: count, name: formName.trim(), note: formNote.trim(), distributedDate: formDate, status: formStatus });
+      const updated = { ...existing, flyerCount: count, name: formName.trim(), note: formNote.trim(), distributedDate: formDate, status: formStatus };
+      saveArea(updated);
+      appendHistory('edit', updated);
     } else {
       if (drawingPoints.length < 3) return;
-      saveArea({
+      const created: DistributedArea = {
         id: Date.now().toString(),
         points: drawingPoints,
         flyerCount: count,
@@ -326,7 +384,9 @@ export function FlyerTrackingMap() {
         status: formStatus,
         createdAt: Date.now(),
         userId: uid ?? undefined,
-      });
+      };
+      saveArea(created);
+      appendHistory('add', created);
       setMode('idle');
       setDrawingPoints([]);
     }
@@ -566,6 +626,35 @@ export function FlyerTrackingMap() {
               </div>
             </CardContent>
           </Card>
+
+          {/* Flyer-Historie */}
+          <Card className="border-slate-700 bg-slate-800/40 lg:col-span-2">
+            <CardHeader className="pb-2"><CardTitle className="text-base flex items-center gap-2"><History className="w-4 h-4 text-emerald-400" /> Flyer-Historie ({history.length})</CardTitle></CardHeader>
+            <CardContent>
+              {history.length === 0 ? (
+                <p className="text-sm text-slate-500 py-2">Noch keine Einträge. Gebiete anlegen, bearbeiten oder löschen wird hier protokolliert.</p>
+              ) : (
+                <div className="max-h-52 overflow-y-auto space-y-1">
+                  {[...history].reverse().map((h) => {
+                    const meta = h.action === 'add'
+                      ? { icon: <PlusCircle className="w-3.5 h-3.5 text-emerald-400" />, label: 'angelegt', color: 'text-emerald-400' }
+                      : h.action === 'edit'
+                        ? { icon: <Pencil className="w-3.5 h-3.5 text-blue-400" />, label: 'bearbeitet', color: 'text-blue-400' }
+                        : { icon: <Trash2 className="w-3.5 h-3.5 text-red-400" />, label: 'gelöscht', color: 'text-red-400' };
+                    return (
+                      <div key={h.id} className="flex items-center gap-2 text-xs bg-slate-900/40 rounded px-2 py-1.5">
+                        {meta.icon}
+                        <span className="text-slate-300 font-medium truncate flex-1">{h.name || 'Gebiet'}</span>
+                        <span className={`${meta.color} font-semibold`}>{meta.label}</span>
+                        <span className="text-emerald-300 tabular-nums">{h.flyerCount.toLocaleString('de-DE')} Flyer</span>
+                        <span className="text-slate-500 tabular-nums">{format(parseISO(h.ts), 'dd.MM.yy HH:mm')}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </CardContent>
+          </Card>
         </div>
       )}
 
@@ -589,6 +678,14 @@ export function FlyerTrackingMap() {
             <Button variant={mode === 'delete' ? 'outline' : 'secondary'} className={mode === 'delete' ? 'border-orange-500 text-orange-400 ring-2 ring-orange-500 ring-offset-2 ring-offset-slate-900' : ''} onClick={() => setMode(mode === 'delete' ? 'idle' : 'delete')}>
               <Eraser className="w-4 h-4 mr-2" /> Löschen
             </Button>
+            <Button
+              variant={snapEnabled ? 'default' : 'secondary'}
+              className={snapEnabled ? 'bg-amber-600 hover:bg-amber-700' : ''}
+              onClick={() => setSnapEnabled((s) => !s)}
+              title="An Eckpunkte benachbarter Gebiete andocken (verhindert Lücken)"
+            >
+              <Magnet className="w-4 h-4 mr-2" /> Andocken {snapEnabled ? 'an' : 'aus'}
+            </Button>
             <div className="flex items-center gap-2 ml-auto">
               <Button variant="outline" size="sm" onClick={handleExportPng} className="border-slate-700"><Download className="w-4 h-4 mr-1" /> PNG</Button>
               <Button variant="outline" size="sm" onClick={handleExportCsv} className="border-slate-700"><Download className="w-4 h-4 mr-1" /> CSV</Button>
@@ -602,6 +699,7 @@ export function FlyerTrackingMap() {
             <span className="flex items-center"><div className="w-3 h-3 bg-blue-500/40 border border-blue-500 mr-2 rounded-sm" /> Geplant</span>
             <span className="flex items-center"><div className="w-3 h-3 bg-red-500 rounded-full mr-2" /> Keine Werbung</span>
             {mode === 'idle' && <span className="text-xs text-slate-500">Tipp: Gebiet anklicken zum Bearbeiten</span>}
+            {mode === 'draw' && snapEnabled && <span className="flex items-center text-xs text-amber-400"><Magnet className="w-3 h-3 mr-1" /> Andocken aktiv – rastet an Nachbar-Eckpunkten ein</span>}
           </div>
         </CardContent>
       </Card>
@@ -651,6 +749,13 @@ export function FlyerTrackingMap() {
 
           {mode === 'draw' && drawingPoints.length > 2 && (
             <Polygon positions={drawingPoints} pathOptions={{ fillColor: '#3b82f6', fillOpacity: 0.2, color: 'transparent', weight: 0 }} />
+          )}
+
+          {/* Andock-Indikator: leuchtet wenn der Cursor an einem Nachbar-Eckpunkt einrastet */}
+          {mode === 'draw' && snapPoint && (
+            <CircleMarker center={snapPoint} radius={11} pathOptions={{ color: '#f59e0b', fillColor: '#f59e0b', fillOpacity: 0.35, weight: 3 }}>
+              <Tooltip permanent direction="top" className="bg-amber-500 text-white border-0 font-bold opacity-90 text-xs">Andocken</Tooltip>
+            </CircleMarker>
           )}
 
           {excludedHouses.map((house) => (

@@ -1472,9 +1472,11 @@ function App() {
 
     let flyerAreas = [];
     let flyerExc = [];
+    let flyerHist = [];
     try {
       flyerAreas = JSON.parse(localStorage.getItem('flyerTracking_areas') || "[]");
       flyerExc = JSON.parse(localStorage.getItem('flyerTracking_excluded') || "[]");
+      flyerHist = JSON.parse(localStorage.getItem('flyerTracking_history') || "[]");
     } catch(e){}
 
     const report = {
@@ -1484,15 +1486,18 @@ function App() {
       legend: {
          b: {
            st: "status (Verkauft=sold, Zu reparieren=todo, Inseriert=listed)",
-           bp: "buyPrice", sp: "sellPrice",
-           exp: "expenses array (materials used from inventory or external: a=amount, d=desc, id=invId, dt=date)",
+           bp: "buyPrice",
+           sp: "sellPrice (realisierter Verkaufspreis, 0 wenn noch nicht verkauft)",
+           tp: "targetSellPrice (Ziel-VK / angepeilter Verkaufspreis, null wenn nicht gesetzt)",
+           exp: "expenses array (materials used from inventory or external: a=amount, d=desc, id=invId, dt=date, cat=category z.B. kleinanzeigen)",
            tz: "timeSpentSeconds",
            rcv: "receivedAt (Eingang)", lst: "listedAt (inseriert am)", sld: "soldAt (verkauft am)",
            acq: "acquisitionSource: flyer=Flyer-Akquise, kleinanzeigen=Kleinanzeigen, null=unbekannt"
          },
          inv: { iq: "initialQuantity", q: "currentQuantity", c: "pricePerUnit", oId: "Group order id" },
          go: { c: "totalCost", n: "name", dt: "date" },
-         svcReq: { iss: "issue", drop: "dropoff", st: "status" }
+         svcReq: { iss: "issue", drop: "dropoff", st: "status" },
+         flyerHistory: { ts: "log timestamp ISO", act: "add|edit|delete", fc: "flyerCount", dt: "distributedDate", st: "status (geplant/erledigt)" }
       },
       stats: {
         rev: Math.round(totalRevenue*100)/100,
@@ -1504,12 +1509,17 @@ function App() {
         capInf: Math.round(infCap*100)/100,
         lagerwert: Math.round(lagerwert*100)/100,
         avgStandzeit: avgStandzeit !== null ? Math.round(avgStandzeit*10)/10 : null,
-        counts: { sold: soldBikes.length, active: activeBikes.length, all: bikes.length }
+        counts: { sold: soldBikes.length, active: activeBikes.length, all: bikes.length },
+        kleinanzeigen: (() => {
+          const kaExp = bikes.flatMap(b => b.expenses.filter(e => e.category === 'kleinanzeigen'));
+          return { ads: kaExp.length, cost: Math.round(kaExp.reduce((s, e) => s + e.amount, 0) * 100) / 100 };
+        })()
       },
       bikes: bikes.map(b => ({
         id: b.id, name: b.name, st: b.status,
         bp: b.purchasePrice, sp: b.sellingPrice || 0,
-        exp: b.expenses.map(e => ({ a: e.amount, d: e.description, dt: e.date, id: e.sourceInventoryId })),
+        tp: b.targetSellingPrice ?? null,
+        exp: b.expenses.map(e => ({ a: e.amount, d: e.description, dt: e.date, id: e.sourceInventoryId, cat: e.category })),
         tz: b.timeSpentSeconds,
         rcv: b.receivedAt || null,
         lst: b.listedAt || null,
@@ -1548,11 +1558,16 @@ function App() {
           date: a.distributedDate || null,
           status: a.status || 'erledigt',
           note: a.note || '',
+        })),
+        history: flyerHist.map((h: any) => ({
+          ts: h.ts, act: h.action, name: h.name, fc: h.flyerCount, dt: h.date || null, st: h.status || null
         }))
       }
     };
 
-    const str = JSON.stringify(report, null, 2);
+    // Minifiziert (kein Pretty-Print) = token-effizienter & einfacher maschinell zu parsen.
+    // Die "legend" oben dokumentiert alle Kurz-Keys, daher bleibt es trotzdem eindeutig lesbar.
+    const str = JSON.stringify(report);
     const url = URL.createObjectURL(new Blob([str], { type: 'application/json' }));
     const a = document.createElement('a');
     a.href = url;
