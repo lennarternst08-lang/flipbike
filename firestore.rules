@@ -116,6 +116,19 @@ service cloud.firestore {
              data.userId == request.auth.uid;
     }
 
+    function isValidFlyerSettings(data) {
+      return hasRequiredFields(['userId']) &&
+             data.userId == request.auth.uid;
+    }
+
+    function isValidFlyerHistory(data) {
+      return hasRequiredFields(['id', 'ts', 'action', 'userId']) &&
+             data.id is string &&
+             data.ts is string && data.ts.size() < 40 &&
+             data.action in ["add", "edit", "delete"] &&
+             data.userId == request.auth.uid;
+    }
+
     function isValidOrder(data) {
       return hasRequiredFields(['id', 'name', 'totalPrice', 'date', 'userId']) &&
              data.id is string &&
@@ -194,6 +207,20 @@ service cloud.firestore {
       allow read: if isAuthenticated() && (!('userId' in resource.data) || resource.data.userId == request.auth.uid || isAdmin());
       allow create: if isAuthenticated() && isValidFlyerHouse(request.resource.data);
       allow update: if isAuthenticated() && isValidFlyerHouse(request.resource.data) && (!('userId' in resource.data) || resource.data.userId == request.auth.uid || isAdmin());
+      allow delete: if isAuthenticated() && (!('userId' in resource.data) || resource.data.userId == request.auth.uid || isAdmin());
+    }
+
+    match /flyerSettings/{settingsId} {
+      allow read: if isAuthenticated() && (!('userId' in resource.data) || resource.data.userId == request.auth.uid || isAdmin());
+      allow create: if isAuthenticated() && isValidFlyerSettings(request.resource.data);
+      allow update: if isAuthenticated() && isValidFlyerSettings(request.resource.data) && (!('userId' in resource.data) || resource.data.userId == request.auth.uid || isAdmin());
+      allow delete: if isAuthenticated() && (!('userId' in resource.data) || resource.data.userId == request.auth.uid || isAdmin());
+    }
+
+    match /flyerHistory/{entryId} {
+      allow read: if isAuthenticated() && (!('userId' in resource.data) || resource.data.userId == request.auth.uid || isAdmin());
+      allow create: if isAuthenticated() && isValidFlyerHistory(request.resource.data);
+      allow update: if isAuthenticated() && isValidFlyerHistory(request.resource.data) && (!('userId' in resource.data) || resource.data.userId == request.auth.uid || isAdmin());
       allow delete: if isAuthenticated() && (!('userId' in resource.data) || resource.data.userId == request.auth.uid || isAdmin());
     }
   }

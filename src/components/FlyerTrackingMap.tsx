@@ -108,6 +108,8 @@ export function FlyerTrackingMap() {
   const mapRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const migratedRef = useRef(false);
+  const settingsHydratedRef = useRef(false);   // true nach erstem Settings-Snapshot
+  const remoteSettingsRef = useRef(false);      // verhindert Echo-Write nach Remote-Update
 
   // Auth-Status beobachten
   useEffect(() => onAuthStateChanged(auth, (u) => setUid(u?.uid ?? null)), []);
@@ -129,7 +131,7 @@ export function FlyerTrackingMap() {
     if (savedSnap !== null) setSnapEnabled(savedSnap === 'true');
   }, []);
 
-  // Historie-Eintrag anhängen (localStorage = Quelle für KI-Export)
+  // Historie-Eintrag anhängen → Firestore (eingeloggt) bzw. lokaler State (offline)
   const appendHistory = (action: FlyerHistoryEntry['action'], area: DistributedArea) => {
     const entry: FlyerHistoryEntry = {
       id: `${Date.now()}-${action}`,
@@ -140,18 +142,28 @@ export function FlyerTrackingMap() {
       date: area.distributedDate || null,
       status: area.status || 'erledigt',
     };
-    setHistory((prev) => {
-      const next = [...prev, entry].slice(-500); // Deckel: letzte 500 Einträge
-      localStorage.setItem('flyerTracking_history', JSON.stringify(next));
-      return next;
-    });
+    if (uid) {
+      // onSnapshot aktualisiert den State; Doc enthält zusätzlich userId
+      setDoc(doc(db, 'flyerHistory', entry.id), { ...entry, userId: uid }).catch(console.error);
+    } else {
+      setHistory((prev) => [...prev, entry].slice(-500));
+    }
   };
+
+  // Historie als Offline-Spiegel + Brücke für KI-Export
+  useEffect(() => {
+    localStorage.setItem('flyerTracking_history', JSON.stringify(history));
+  }, [history]);
+
+  // Einstellungen persistieren: lokal (Offline) + Firestore (geräteübergreifend)
   useEffect(() => {
     localStorage.setItem('flyerTracking_settings', JSON.stringify({ costPerFlyer, customersWon, marginPerCustomer }));
-  }, [costPerFlyer, customersWon, marginPerCustomer]);
-  useEffect(() => {
     localStorage.setItem('flyerTracking_snapEnabled', String(snapEnabled));
-  }, [snapEnabled]);
+    if (!uid) return;
+    if (remoteSettingsRef.current) { remoteSettingsRef.current = false; return; } // Echo unterdrücken
+    if (!settingsHydratedRef.current) return; // erst nach Initial-Snapshot schreiben
+    setDoc(doc(db, 'flyerSettings', uid), { userId: uid, costPerFlyer, customersWon, marginPerCustomer, snapEnabled }, { merge: true }).catch(console.error);
+  }, [costPerFlyer, customersWon, marginPerCustomer, snapEnabled, uid]);
 
   // Auto-Zentrierung beim ersten Laden:
   // 1) Gebiete vorhanden → letztes hinzugefügtes Gebiet (Schwerpunkt)
@@ -223,7 +235,50 @@ export function FlyerTrackingMap() {
         setExcludedHouses(loaded);
       });
 
-      return () => { unsubAreas(); unsubHouses(); };
+      // Einstellungen (Kosten/ROI/Snap) – ein Dokument je Nutzer
+      const unsubSettings = onSnapshot(doc(db, 'flyerSettings', uid), (snap) => {
+        if (snap.exists()) {
+          const d: any = snap.data();
+          remoteSettingsRef.current = true; // nächsten Persist-Effekt nicht zurückschreiben
+          setCostPerFlyer(d.costPerFlyer ?? '');
+          setCustomersWon(d.customersWon ?? '');
+          setMarginPerCustomer(d.marginPerCustomer ?? '');
+          if (typeof d.snapEnabled === 'boolean') setSnapEnabled(d.snapEnabled);
+        } else if (!settingsHydratedRef.current) {
+          // Noch kein Remote-Dokument → lokale Einstellungen einmalig hochladen
+          const local = (() => { try { return JSON.parse(localStorage.getItem('flyerTracking_settings') || '{}'); } catch { return {}; } })();
+          const snapLocal = localStorage.getItem('flyerTracking_snapEnabled');
+          setDoc(doc(db, 'flyerSettings', uid), {
+            userId: uid,
+            costPerFlyer: local.costPerFlyer ?? '',
+            customersWon: local.customersWon ?? '',
+            marginPerCustomer: local.marginPerCustomer ?? '',
+            snapEnabled: snapLocal === null ? true : snapLocal === 'true',
+          }, { merge: true }).catch(console.error);
+        }
+        settingsHydratedRef.current = true;
+      });
+
+      // Historie – eine Collection je Eintrag
+      const qHist = query(collection(db, 'flyerHistory'), where('userId', '==', uid));
+      const unsubHist = onSnapshot(qHist, (snap) => {
+        const loaded = snap.docs
+          .map((d) => {
+            const { userId, ...rest } = d.data() as any;
+            return rest as FlyerHistoryEntry;
+          })
+          .sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0));
+        if (loaded.length === 0) {
+          // Lokale Historie einmalig migrieren
+          try {
+            const legacy: FlyerHistoryEntry[] = JSON.parse(localStorage.getItem('flyerTracking_history') || '[]');
+            legacy.forEach((h) => setDoc(doc(db, 'flyerHistory', h.id), { ...h, userId: uid }).catch(console.error));
+          } catch {}
+        }
+        setHistory(loaded);
+      });
+
+      return () => { unsubAreas(); unsubHouses(); unsubSettings(); unsubHist(); };
     } else {
       // Offline-Modus
       const savedAreas = localStorage.getItem('flyerTracking_areas');
