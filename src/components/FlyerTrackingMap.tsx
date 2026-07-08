@@ -8,7 +8,7 @@ import { Bar } from 'react-chartjs-2';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
-import { Download, Map as MapIcon, PenTool, XOctagon, Eraser, Undo2, Check, Search, Upload, Pencil, Euro, BarChart3, Ruler, History, Magnet, PlusCircle, Trash2 } from 'lucide-react';
+import { Download, Map as MapIcon, PenTool, XOctagon, Eraser, Undo2, Check, Search, Upload, Pencil, Euro, BarChart3, Ruler, History, Magnet, PlusCircle, Trash2, Clock } from 'lucide-react';
 import html2canvas from 'html2canvas';
 import { format, parseISO, subMonths, isSameMonth } from 'date-fns';
 import { de } from 'date-fns/locale';
@@ -51,6 +51,7 @@ const serializeArea = (a: DistributedArea, uid: string) => ({
   note: a.note || '',
   distributedDate: a.distributedDate || todayISO(),
   status: a.status || 'erledigt',
+  durationMinutes: a.durationMinutes || 0,
   createdAt: a.createdAt || Date.now(),
 });
 const deserializeArea = (d: any): DistributedArea => ({
@@ -61,9 +62,17 @@ const deserializeArea = (d: any): DistributedArea => ({
   note: d.note || '',
   distributedDate: d.distributedDate || todayISO(),
   status: d.status || 'erledigt',
+  durationMinutes: d.durationMinutes || 0,
   createdAt: d.createdAt,
   userId: d.userId,
 });
+
+// Minuten → "1 h 30 min" bzw. "45 min"
+const formatDuration = (mins: number) => {
+  const h = Math.floor(mins / 60);
+  const m = Math.round(mins % 60);
+  return h > 0 ? `${h} h ${m} min` : `${m} min`;
+};
 
 // Map-Steuerung: fliegt zu einer Zielposition (Adresssuche)
 function MapFlyTo({ target }: { target: { lat: number; lng: number; ts: number } | null }) {
@@ -74,7 +83,11 @@ function MapFlyTo({ target }: { target: { lat: number; lng: number; ts: number }
   return null;
 }
 
-export function FlyerTrackingMap() {
+interface FlyerTrackingMapProps {
+  addLog?: (message: string, module?: 'tracking' | 'workshop' | 'stopwatch' | 'system', revertAction?: any) => void;
+}
+
+export function FlyerTrackingMap({ addLog }: FlyerTrackingMapProps = {}) {
   const [uid, setUid] = useState<string | null>(auth.currentUser?.uid ?? null);
   const [areas, setAreas] = useState<DistributedArea[]>([]);
   const [excludedHouses, setExcludedHouses] = useState<ExcludedHouse[]>([]);
@@ -93,6 +106,7 @@ export function FlyerTrackingMap() {
   const [formNote, setFormNote] = useState('');
   const [formDate, setFormDate] = useState(todayISO());
   const [formStatus, setFormStatus] = useState<FlyerAreaStatus>('erledigt');
+  const [formDuration, setFormDuration] = useState(''); // Verteil-Dauer in Minuten
 
   // Adresssuche (Geocoding via Nominatim/OSM)
   const [searchQuery, setSearchQuery] = useState('');
@@ -405,6 +419,7 @@ export function FlyerTrackingMap() {
     setFormNote('');
     setFormDate(todayISO());
     setFormStatus('erledigt');
+    setFormDuration('');
     setShowModal(true);
   };
 
@@ -415,18 +430,25 @@ export function FlyerTrackingMap() {
     setFormNote(area.note || '');
     setFormDate(area.distributedDate || todayISO());
     setFormStatus(area.status || 'erledigt');
+    setFormDuration(area.durationMinutes ? area.durationMinutes.toString() : '');
     setShowModal(true);
   };
 
   const handleSaveArea = () => {
     const count = parseInt(formCount);
     if (isNaN(count) || count < 0) return;
+    const duration = Math.max(0, parseInt(formDuration) || 0);
     if (editingAreaId) {
       const existing = areas.find((a) => a.id === editingAreaId);
       if (!existing) return;
-      const updated = { ...existing, flyerCount: count, name: formName.trim(), note: formNote.trim(), distributedDate: formDate, status: formStatus };
+      const oldDuration = existing.durationMinutes || 0;
+      const updated = { ...existing, flyerCount: count, name: formName.trim(), note: formNote.trim(), distributedDate: formDate, status: formStatus, durationMinutes: duration };
       saveArea(updated);
       appendHistory('edit', updated);
+      // Dauer-Änderung protokollieren (fließt in Geschäfts-Stundenlohn ein)
+      if (duration !== oldDuration && (duration > 0 || oldDuration > 0)) {
+        addLog?.(`Flyer verteilen (Dauer geändert): ${updated.name || 'Gebiet'} – ${formatDuration(oldDuration)} → ${formatDuration(duration)}`, 'stopwatch');
+      }
     } else {
       if (drawingPoints.length < 3) return;
       const created: DistributedArea = {
@@ -437,11 +459,16 @@ export function FlyerTrackingMap() {
         note: formNote.trim(),
         distributedDate: formDate,
         status: formStatus,
+        durationMinutes: duration,
         createdAt: Date.now(),
         userId: uid ?? undefined,
       };
       saveArea(created);
       appendHistory('add', created);
+      // Verteil-Dauer als Zeiteintrag protokollieren (fließt in Geschäfts-Stundenlohn ein)
+      if (duration > 0) {
+        addLog?.(`Flyer verteilen: ${created.name || 'Gebiet'} (${count} Flyer) – ${formatDuration(duration)}`, 'stopwatch');
+      }
       setMode('idle');
       setDrawingPoints([]);
     }
@@ -454,6 +481,7 @@ export function FlyerTrackingMap() {
     setFormCount('');
     setFormName('');
     setFormNote('');
+    setFormDuration('');
   };
 
   const cancelDrawing = () => {
@@ -536,7 +564,7 @@ export function FlyerTrackingMap() {
       features: [
         ...areas.map((a) => ({
           type: 'Feature',
-          properties: { kind: 'area', id: a.id, name: a.name, flyerCount: a.flyerCount, distributedDate: a.distributedDate, status: a.status, note: a.note },
+          properties: { kind: 'area', id: a.id, name: a.name, flyerCount: a.flyerCount, distributedDate: a.distributedDate, status: a.status, note: a.note, durationMinutes: a.durationMinutes || 0 },
           geometry: { type: 'Polygon', coordinates: [[...a.points, a.points[0]].map(([lat, lng]) => [lng, lat])] },
         })),
         ...excludedHouses.map((h) => ({
@@ -572,6 +600,7 @@ export function FlyerTrackingMap() {
               note: f.properties?.note || '',
               distributedDate: f.properties?.distributedDate || todayISO(),
               status: f.properties?.status || 'erledigt',
+              durationMinutes: f.properties?.durationMinutes || 0,
               createdAt: Date.now(),
               userId: uid ?? undefined,
             });
@@ -862,6 +891,10 @@ export function FlyerTrackingMap() {
                     </select>
                   </label>
                 </div>
+                <label className="text-xs text-slate-400 flex flex-col gap-1">
+                  <span className="flex items-center gap-1"><Clock className="w-3 h-3" /> Dauer (Minuten) – fließt in Geschäfts-Stundenlohn</span>
+                  <Input type="number" min="0" placeholder="z. B. 45" value={formDuration} onChange={(e) => setFormDuration(e.target.value)} className="bg-slate-800 h-9" />
+                </label>
                 <Input placeholder="Notiz (optional)" value={formNote} onChange={(e) => setFormNote(e.target.value)} className="bg-slate-800" />
                 <div className="flex space-x-2 pt-1">
                   <Button variant="secondary" className="flex-1" onClick={editingAreaId ? closeModal : cancelDrawing}>Abbrechen</Button>

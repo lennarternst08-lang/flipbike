@@ -40,6 +40,7 @@ export interface WorkLog {
   id: string;
   timestamp: string;
   durationSeconds: number;
+  note?: string; // frei beschriftbare Notiz zur einzelnen Zeit (Arbeits-Protokoll)
 }
 
 export interface Receipt {
@@ -92,6 +93,7 @@ export interface DistributedArea {
   note?: string;
   distributedDate?: string; // ISO yyyy-mm-dd
   status?: FlyerAreaStatus;
+  durationMinutes?: number; // Verteil-Dauer in Minuten → fließt in Geschäfts-Stundenlohn & Logs ein
   createdAt?: number;
   userId?: string;
 }

@@ -274,7 +274,7 @@ export function DailyTodoModule({
         </Card>
       )}
 
-      <FlyerTrackingMap />
+      <FlyerTrackingMap addLog={addLog} />
     </div>
   );
 }

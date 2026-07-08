@@ -19,8 +19,9 @@ import { Input } from './ui/input';
 import { formatCurrency, formatTime } from '../lib/utils';
 import { TrendingUp, Clock, Wallet, Plus, Search, Filter, ArrowUpDown, ArrowUp, ArrowDown, MoreVertical, Trash2, Edit2, Star, ChevronDown, ChevronUp, X, Check, FileCheck, Eye, EyeOff, Play, Pause, RotateCcw, Megaphone, Monitor } from 'lucide-react';
 import { ReceiptUploader } from './ReceiptUploader';
-import { doc, deleteDoc } from 'firebase/firestore';
-import { db } from '../firebase';
+import { doc, deleteDoc, setDoc, getDoc } from 'firebase/firestore';
+import { db, auth } from '../firebase';
+import { onAuthStateChanged } from 'firebase/auth';
 import { 
   format, subDays, subWeeks, subMonths, subYears, 
   isSameDay, isSameWeek, isSameMonth, isSameYear, 
@@ -66,6 +67,10 @@ ChartJS.register(
   Filler,
   pointLabelsPlugin
 );
+
+// Kosten pro Kleinanzeigen-Inserat. Jede Gebühr wird als eigener Expense gespeichert,
+// daher wirkt eine spätere Preisänderung nur auf neu erfasste Inserate.
+const KLEINANZEIGEN_AD_COST = 2.5;
 
 interface TrackingModuleProps {
   bikes: Bike[];
@@ -194,7 +199,7 @@ export function TrackingModule({
 
   const [selectedPeriodIndex, setSelectedPeriodIndex] = useState<number | null>(null);
 
-  // Universal operative timer (localStorage-persisted, counts toward businessHourlyWage)
+  // Universal operative timer (synced to Firestore + localStorage fallback)
   const [univIsRunning, setUnivIsRunning] = useState(false);
   const [univTime, setUnivTime] = useState(0);
   const [univLogs, setUnivLogs] = useState<WorkLog[]>([]);
@@ -203,13 +208,36 @@ export function TrackingModule({
   const univTimerRef = useRef<number | null>(null);
   const univStartTsRef = useRef<number | null>(null);
   const univBaseRef = useRef<number>(0);
+  const [univUser, setUnivUser] = useState<any>(auth.currentUser);
 
-  // Load universal timer from localStorage on mount
   React.useEffect(() => {
-    const saved = localStorage.getItem('flipbike_univ_timer');
-    if (!saved) return;
-    try {
-      const data = JSON.parse(saved);
+    const unsub = onAuthStateChanged(auth, u => setUnivUser(u));
+    return unsub;
+  }, []);
+
+  const saveTimerData = React.useCallback((data: { logs: WorkLog[]; startTime: number | null; baseSeconds: number }) => {
+    localStorage.setItem('flipbike_univ_timer', JSON.stringify(data));
+    const uid = auth.currentUser?.uid;
+    if (uid) {
+      setDoc(doc(db, 'userTimers', uid), { ...data, userId: uid }).catch(e =>
+        console.error('Failed to save timer to Firestore:', e)
+      );
+    }
+  }, []);
+
+  const clearTimerData = React.useCallback(() => {
+    localStorage.removeItem('flipbike_univ_timer');
+    const uid = auth.currentUser?.uid;
+    if (uid) {
+      setDoc(doc(db, 'userTimers', uid), { logs: [], startTime: null, baseSeconds: 0, userId: uid }).catch(e =>
+        console.error('Failed to reset timer in Firestore:', e)
+      );
+    }
+  }, []);
+
+  // Load universal timer: Firestore first (if logged in), fallback to localStorage
+  React.useEffect(() => {
+    const applyData = (data: { logs?: WorkLog[]; startTime?: number | null; baseSeconds?: number }) => {
       const logs: WorkLog[] = data.logs || [];
       setUnivLogs(logs);
       if (data.startTime) {
@@ -222,8 +250,27 @@ export function TrackingModule({
       } else {
         setUnivTime(data.baseSeconds || 0);
       }
-    } catch {}
-  }, []);
+    };
+
+    if (univUser?.uid) {
+      getDoc(doc(db, 'userTimers', univUser.uid))
+        .then(snap => {
+          if (snap.exists()) {
+            applyData(snap.data() as any);
+          } else {
+            const saved = localStorage.getItem('flipbike_univ_timer');
+            if (saved) { try { applyData(JSON.parse(saved)); } catch {} }
+          }
+        })
+        .catch(() => {
+          const saved = localStorage.getItem('flipbike_univ_timer');
+          if (saved) { try { applyData(JSON.parse(saved)); } catch {} }
+        });
+    } else {
+      const saved = localStorage.getItem('flipbike_univ_timer');
+      if (saved) { try { applyData(JSON.parse(saved)); } catch {} }
+    }
+  }, [univUser]);
 
   // Timer tick
   React.useEffect(() => {
@@ -242,7 +289,7 @@ export function TrackingModule({
     univStartTsRef.current = now;
     univBaseRef.current = univTime;
     setUnivIsRunning(true);
-    localStorage.setItem('flipbike_univ_timer', JSON.stringify({ logs: univLogs, startTime: now, baseSeconds: univTime }));
+    saveTimerData({ logs: univLogs, startTime: now, baseSeconds: univTime });
   };
 
   const handleUnivStop = () => {
@@ -256,7 +303,7 @@ export function TrackingModule({
       setUnivLogs(newLogs);
     }
     univStartTsRef.current = null;
-    localStorage.setItem('flipbike_univ_timer', JSON.stringify({ logs: newLogs, startTime: null, baseSeconds: univTime }));
+    saveTimerData({ logs: newLogs, startTime: null, baseSeconds: univTime });
   };
 
   const handleUnivAdjust = () => {
@@ -270,7 +317,7 @@ export function TrackingModule({
       const newLog: WorkLog = { id: Date.now().toString(), timestamp: new Date().toISOString(), durationSeconds: delta };
       const newLogs = [...univLogs, newLog];
       setUnivLogs(newLogs);
-      localStorage.setItem('flipbike_univ_timer', JSON.stringify({ logs: newLogs, startTime: univStartTsRef.current, baseSeconds: univIsRunning ? univBaseRef.current : newTime }));
+      saveTimerData({ logs: newLogs, startTime: univStartTsRef.current, baseSeconds: univIsRunning ? univBaseRef.current : newTime });
     }
     setUnivAdjust('');
   };
@@ -283,7 +330,7 @@ export function TrackingModule({
     if (univIsRunning) univBaseRef.current -= log.durationSeconds;
     const newLogs = univLogs.filter(l => l.id !== logId);
     setUnivLogs(newLogs);
-    localStorage.setItem('flipbike_univ_timer', JSON.stringify({ logs: newLogs, startTime: univStartTsRef.current, baseSeconds: univIsRunning ? univBaseRef.current : newTime }));
+    saveTimerData({ logs: newLogs, startTime: univStartTsRef.current, baseSeconds: univIsRunning ? univBaseRef.current : newTime });
   };
 
   const handleUnivReset = () => {
@@ -291,7 +338,7 @@ export function TrackingModule({
     setUnivTime(0);
     setUnivLogs([]);
     univBaseRef.current = 0;
-    localStorage.removeItem('flipbike_univ_timer');
+    clearTimerData();
   };
 
   const handleStatusChange = (bikeId: string, newStatus: BikeStatus) => {
@@ -391,8 +438,20 @@ export function TrackingModule({
     ? soldBikesProfit / (totalTimeSeconds / 3600)
     : 0;
 
-  // Bug #1: Geschäfts-Stundenlohn = Nettogewinn / gesamte erfasste Zeit (alle Räder + operative Zeit, alle Kosten)
-  const totalAllTimeSeconds = bikes.reduce((acc, bike) => acc + bike.timeSpentSeconds, 0) + univTime;
+  // Flyer-Verteilzeit (aus dem Flyer-Tracking, lokal gespiegelt) → zählt als Arbeitszeit
+  const flyerDurationSeconds = React.useMemo(() => {
+    try {
+      const areas = JSON.parse(localStorage.getItem('flyerTracking_areas') || '[]');
+      return Array.isArray(areas)
+        ? areas.reduce((sum: number, a: any) => sum + (Number(a.durationMinutes) || 0) * 60, 0)
+        : 0;
+    } catch {
+      return 0;
+    }
+  }, [bikes]); // bikes ändert sich häufig → hält den Wert beim Tab-Wechsel aktuell
+
+  // Bug #1: Geschäfts-Stundenlohn = Nettogewinn / gesamte erfasste Zeit (alle Räder + operative Zeit + Flyer-Zeit, alle Kosten)
+  const totalAllTimeSeconds = bikes.reduce((acc, bike) => acc + bike.timeSpentSeconds, 0) + univTime + flyerDurationSeconds;
   const businessHourlyWage = totalAllTimeSeconds > 0
     ? totalProfit / (totalAllTimeSeconds / 3600)
     : 0;
@@ -1206,20 +1265,19 @@ export function TrackingModule({
             <table className="w-full text-sm text-left text-slate-300 border-separate border-spacing-0">
               <thead className="text-xs text-slate-400 uppercase bg-slate-800 sticky top-0 z-30">
                 <tr>
-                  <th className="px-2 py-3 cursor-pointer hover:bg-slate-700/50 sticky left-0 z-40 bg-slate-800 border-r border-slate-700/50 min-w-[140px]" onClick={() => handleSort('name')}>Fahrrad ({filteredBikes.length}) <SortIcon field="name" /></th>
-                  <th className="px-2 py-3 border-b border-slate-700/50">Beleg</th>
+                  <th className="px-2 py-3 cursor-pointer hover:bg-slate-700/50 sticky left-0 z-40 bg-slate-800 border-r border-slate-700/50 min-w-[120px]" onClick={() => handleSort('name')}>Fahrrad ({filteredBikes.length}) <SortIcon field="name" /></th>
                   <th className="px-1 py-3 border-b border-slate-700/50 w-8 text-center" title="Akquise-Quelle (FL = Flyer, KA = Kleinanzeigen)">Src</th>
-                  <th className="px-3 py-3 cursor-pointer hover:bg-slate-700/50 border-b border-slate-700/50" onClick={() => handleSort('status')}>Status <SortIcon field="status" /></th>
-                  <th className="px-3 py-3 cursor-pointer hover:bg-slate-700/50 border-b border-slate-700/50" onClick={() => handleSort('purchaseDate')}>Ankauf <SortIcon field="purchaseDate" /></th>
-                  <th className="px-3 py-3 cursor-pointer hover:bg-slate-700/50 border-b border-slate-700/50" onClick={() => handleSort('purchasePrice')}>EK (€) <SortIcon field="purchasePrice" /></th>
-                  {tableViewMode === 'expanded' && <th className="px-3 py-3 cursor-pointer hover:bg-slate-700/50 border-b border-slate-700/50" onClick={() => handleSort('expenses')}>Material (€) <SortIcon field="expenses" /></th>}
-                  {tableViewMode === 'expanded' && <th className="px-3 py-3 cursor-pointer hover:bg-slate-700/50 border-b border-slate-700/50" onClick={() => handleSort('timeSpentSeconds')}>Stunden <SortIcon field="timeSpentSeconds" /></th>}
-                  {tableViewMode === 'expanded' && <th className="px-3 py-3 cursor-pointer hover:bg-slate-700/50 border-b border-slate-700/50" onClick={() => handleSort('targetSellingPrice')}>Ziel VK (€) <SortIcon field="targetSellingPrice" /></th>}
-                  <th className="px-3 py-3 cursor-pointer hover:bg-slate-700/50 border-b border-slate-700/50" onClick={() => handleSort('saleDate')}>Verkauf <SortIcon field="saleDate" /></th>
-                  {tableViewMode === 'expanded' && <th className="px-3 py-3 cursor-pointer hover:bg-slate-700/50 border-b border-slate-700/50" onClick={() => handleSort('velocity')}>Dauer <SortIcon field="velocity" /></th>}
-                  <th className="px-3 py-3 cursor-pointer hover:bg-slate-700/50 border-b border-slate-700/50" onClick={() => handleSort('sellingPrice')}>VK (€) <SortIcon field="sellingPrice" /></th>
-                  {tableViewMode === 'expanded' && <th className="px-3 py-3 cursor-pointer hover:bg-slate-700/50 border-b border-slate-700/50" onClick={() => handleSort('hourlyWage')}>Stundenlohn <SortIcon field="hourlyWage" /></th>}
-                  <th className="px-3 py-3 cursor-pointer hover:bg-slate-700/50 border-b border-slate-700/50" onClick={() => handleSort('profit')}>Profit <SortIcon field="profit" /></th>
+                  <th className="px-2 py-3 cursor-pointer hover:bg-slate-700/50 border-b border-slate-700/50" onClick={() => handleSort('status')}>Status <SortIcon field="status" /></th>
+                  <th className="px-2 py-3 cursor-pointer hover:bg-slate-700/50 border-b border-slate-700/50" onClick={() => handleSort('purchaseDate')}>Ankauf <SortIcon field="purchaseDate" /></th>
+                  <th className="px-2 py-3 cursor-pointer hover:bg-slate-700/50 border-b border-slate-700/50" onClick={() => handleSort('purchasePrice')}>EK (€) <SortIcon field="purchasePrice" /></th>
+                  {tableViewMode === 'expanded' && <th className="px-2 py-3 cursor-pointer hover:bg-slate-700/50 border-b border-slate-700/50" onClick={() => handleSort('expenses')}>Material (€) <SortIcon field="expenses" /></th>}
+                  {tableViewMode === 'expanded' && <th className="px-2 py-3 cursor-pointer hover:bg-slate-700/50 border-b border-slate-700/50" onClick={() => handleSort('timeSpentSeconds')}>Stunden <SortIcon field="timeSpentSeconds" /></th>}
+                  {tableViewMode === 'expanded' && <th className="px-2 py-3 cursor-pointer hover:bg-slate-700/50 border-b border-slate-700/50" onClick={() => handleSort('targetSellingPrice')}>Ziel VK (€) <SortIcon field="targetSellingPrice" /></th>}
+                  <th className="px-2 py-3 cursor-pointer hover:bg-slate-700/50 border-b border-slate-700/50" onClick={() => handleSort('saleDate')}>Verkauf <SortIcon field="saleDate" /></th>
+                  {tableViewMode === 'expanded' && <th className="px-2 py-3 cursor-pointer hover:bg-slate-700/50 border-b border-slate-700/50" onClick={() => handleSort('velocity')}>Dauer <SortIcon field="velocity" /></th>}
+                  <th className="px-2 py-3 cursor-pointer hover:bg-slate-700/50 border-b border-slate-700/50" onClick={() => handleSort('sellingPrice')}>VK (€) <SortIcon field="sellingPrice" /></th>
+                  <th className="px-2 py-3 cursor-pointer hover:bg-slate-700/50 border-b border-slate-700/50" onClick={() => handleSort('hourlyWage')}>Stundenlohn <SortIcon field="hourlyWage" /></th>
+                  <th className="px-2 py-3 cursor-pointer hover:bg-slate-700/50 border-b border-slate-700/50" onClick={() => handleSort('profit')}>Profit <SortIcon field="profit" /></th>
                 </tr>
               </thead>
               <tbody>
@@ -1302,6 +1360,56 @@ export function TrackingModule({
                                         </button>
                                       </div>
                                     </div>
+                                    {/* Kleinanzeigen-Inserate (Gebühr pro Inserat) */}
+                                    {(() => {
+                                      const adExpenses = bike.expenses.filter(e => e.category === 'kleinanzeigen');
+                                      const adCount = adExpenses.length;
+                                      const addAd = (e: React.MouseEvent) => {
+                                        e.stopPropagation();
+                                        const newExpense = {
+                                          id: Math.random().toString(36).substr(2, 9),
+                                          description: 'Kleinanzeigen-Inserat',
+                                          amount: KLEINANZEIGEN_AD_COST,
+                                          date: new Date().toISOString(),
+                                          category: 'kleinanzeigen' as const,
+                                        };
+                                        updateBike(bike.id, { expenses: [...bike.expenses, newExpense] });
+                                      };
+                                      const removeAd = (e: React.MouseEvent) => {
+                                        e.stopPropagation();
+                                        if (adCount === 0) return;
+                                        const lastAdId = adExpenses[adExpenses.length - 1].id;
+                                        updateBike(bike.id, { expenses: bike.expenses.filter(x => x.id !== lastAdId) });
+                                      };
+                                      return (
+                                        <div className="px-3 py-2">
+                                          <p className="text-[10px] uppercase font-bold text-slate-500 tracking-wider mb-1.5">
+                                            Kleinanzeigen-Inserate <span className="text-slate-600 normal-case font-medium">({formatCurrency(KLEINANZEIGEN_AD_COST)}/St.)</span>
+                                          </p>
+                                          <div className="flex items-center gap-2">
+                                            <button
+                                              onClick={removeAd}
+                                              disabled={adCount === 0}
+                                              className="w-7 h-7 flex items-center justify-center rounded bg-slate-700 text-slate-300 hover:bg-slate-600 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                                            >
+                                              <ChevronDown className="w-4 h-4" />
+                                            </button>
+                                            <div className="flex-1 text-center">
+                                              <span className="text-sm font-bold text-slate-200">{adCount}×</span>
+                                              {adCount > 0 && (
+                                                <span className="text-xs text-blue-400 ml-1.5">= {formatCurrency(adCount * KLEINANZEIGEN_AD_COST)}</span>
+                                              )}
+                                            </div>
+                                            <button
+                                              onClick={addAd}
+                                              className="w-7 h-7 flex items-center justify-center rounded bg-blue-600 text-white hover:bg-blue-500 transition-colors"
+                                            >
+                                              <ChevronUp className="w-4 h-4" />
+                                            </button>
+                                          </div>
+                                        </div>
+                                      );
+                                    })()}
                                     <div className="h-px bg-slate-700 my-1"></div>
                                     <button
                                       onClick={(e) => {
@@ -1359,18 +1467,6 @@ export function TrackingModule({
                           </button>
                         </div>
                       </td>
-                      <td className="px-2 py-2">
-                        {(bike.status === 'Infrastruktur' || bike.status === 'Material' || bike.id.startsWith('monthly-mat-')) ? (
-                          <ReceiptUploader
-                            bikeId={bike.id}
-                            referenceId={bike.id}
-                            referenceType={bike.status === 'Infrastruktur' ? 'infrastructure' : 'material'}
-                            existingReceipt={receipts.find(r => r.referenceId === bike.id)}
-                          />
-                        ) : (
-                          <span className="text-slate-600 text-xs">–</span>
-                        )}
-                      </td>
                       <td className="px-1 py-2 text-center w-8">
                         {bike.acquisitionSource === 'flyer' && (
                           <span title="Flyer-Akquise">
@@ -1383,7 +1479,7 @@ export function TrackingModule({
                           </span>
                         )}
                       </td>
-                      <td className="px-3 py-2">
+                      <td className="px-2 py-2">
                         <select
                           value={bike.status}
                           disabled={bike._isHypothetical}
@@ -1404,8 +1500,8 @@ export function TrackingModule({
                           <option value="Material" className="bg-slate-800 text-slate-200">Material</option>
                         </select>
                       </td>
-                      <td className="px-3 py-2">
-                        <div className="relative w-32 h-8">
+                      <td className="px-2 py-2">
+                        <div className="relative w-28 h-8">
                           <Input 
                             type={bike.purchaseDate ? "date" : "text"}
                             value={bike.purchaseDate || ''} 
@@ -1433,7 +1529,7 @@ export function TrackingModule({
                           )}
                         </div>
                       </td>
-                      <td className="px-3 py-2">
+                      <td className="px-2 py-2">
                         <Input 
                           type="number"
                           value={bike.purchasePrice} 
@@ -1442,12 +1538,12 @@ export function TrackingModule({
                         />
                       </td>
                       {tableViewMode === 'expanded' && (
-                        <td className="px-3 py-2">
+                        <td className="px-2 py-2">
                           <span className="text-slate-300 px-2">{formatCurrency(expenses)}</span>
                         </td>
                       )}
                       {tableViewMode === 'expanded' && (
-                        <td className="px-3 py-2">
+                        <td className="px-2 py-2">
                           <button 
                             onClick={() => {
                               setEditTimeBikeId(bike.id);
@@ -1487,7 +1583,7 @@ export function TrackingModule({
                         </td>
                       )}
                       {tableViewMode === 'expanded' && (
-                        <td className="px-3 py-2">
+                        <td className="px-2 py-2">
                           <Input 
                             type="number"
                             value={bike.targetSellingPrice || ''} 
@@ -1497,8 +1593,8 @@ export function TrackingModule({
                           />
                         </td>
                       )}
-                      <td className="px-3 py-2">
-                        <div className="relative w-32 h-8">
+                      <td className="px-2 py-2">
+                        <div className="relative w-28 h-8">
                           <Input 
                             type={bike.saleDate ? "date" : "text"}
                             value={bike.saleDate || ''} 
@@ -1529,13 +1625,13 @@ export function TrackingModule({
                         </div>
                       </td>
                       {tableViewMode === 'expanded' && (
-                        <td className="px-3 py-2 whitespace-nowrap">
+                        <td className="px-2 py-2 whitespace-nowrap">
                           <span className="text-slate-300 px-2">
                             {bike.saleDate ? `${differenceInDays(parseISO(bike.saleDate), parseISO(bike.purchaseDate))} d` : '-'}
                           </span>
                         </td>
                       )}
-                      <td className="px-3 py-2">
+                      <td className="px-2 py-2">
                         <Input 
                           type="number"
                           value={bike.sellingPrice || ''} 
@@ -1552,18 +1648,16 @@ export function TrackingModule({
                           placeholder="-"
                         />
                       </td>
-                      {tableViewMode === 'expanded' && (
-                        <td className={`px-3 py-2 font-medium ${
-                          hourlyWage !== null 
-                            ? hourlyWage >= 15 
-                              ? 'text-emerald-400' 
-                              : 'text-red-400' 
-                            : 'text-slate-400'
-                        }`}>
-                          {hourlyWage !== null ? `${formatCurrency(hourlyWage)}/h` : '-'}
-                        </td>
-                      )}
-                      <td className={`px-3 py-2 font-medium ${profit && profit > 0 ? 'text-emerald-400' : profit && profit < 0 ? 'text-red-400' : 'text-slate-400'}`}>
+                      <td className={`px-2 py-2 font-medium ${
+                        hourlyWage !== null
+                          ? hourlyWage >= 15
+                            ? 'text-emerald-400'
+                            : 'text-red-400'
+                          : 'text-slate-400'
+                      }`}>
+                        {hourlyWage !== null ? `${formatCurrency(hourlyWage)}/h` : '-'}
+                      </td>
+                      <td className={`px-2 py-2 font-medium ${profit && profit > 0 ? 'text-emerald-400' : profit && profit < 0 ? 'text-red-400' : 'text-slate-400'}`}>
                         {profit !== null ? formatCurrency(profit) : '-'}
                       </td>
                     </tr>
@@ -1578,12 +1672,12 @@ export function TrackingModule({
       {/* Hypothetical Mode Toggle */}
       <div className={`flex items-center justify-between p-4 rounded-xl border ${isHypotheticalMode ? 'bg-orange-500/10 border-orange-500/50' : 'bg-slate-800/50 border-slate-700/50'} transition-colors mt-6 mb-2`}>
         <div className="flex items-center space-x-3">
-          <input 
-            type="checkbox" 
+          <input
+            type="checkbox"
             id="hypotheticalMode"
             checked={isHypotheticalMode}
             onChange={(e) => setIsHypotheticalMode(e.target.checked)}
-            className="w-5 h-5 rounded border-slate-600 text-orange-500 focus:ring-orange-500 bg-slate-700" 
+            className="w-5 h-5 rounded border-slate-600 text-orange-500 focus:ring-orange-500 bg-slate-700"
           />
           <div>
             <label htmlFor="hypotheticalMode" className="font-bold text-slate-200 cursor-pointer flex items-center">
@@ -1596,6 +1690,58 @@ export function TrackingModule({
           </div>
         </div>
       </div>
+
+      {/* Warning: active bikes without target price */}
+      {(() => {
+        const bikesWithoutTarget = rawBikes.filter(
+          b => (b.status === 'Inseriert' || b.status === 'Zu reparieren') && !(b.targetSellingPrice && b.targetSellingPrice > 0)
+        );
+        if (bikesWithoutTarget.length === 0) return null;
+        return (
+          <div className="rounded-xl border border-red-500/40 bg-red-500/10 p-4 space-y-3">
+            <p className="text-sm font-bold text-red-400 flex items-center gap-2">
+              <span className="text-base">⚠</span>
+              {bikesWithoutTarget.length} {bikesWithoutTarget.length === 1 ? 'Rad' : 'Räder'} ohne Zielpreis — Liquidationsmodus fliegt blind
+            </p>
+            <p className="text-xs text-slate-400">
+              Der Liquidationsmodus simuliert für diese Räder nur Break-Even (Profit = 0). Trage den angestrebten VK ein, damit die Stundengewinn-Simulation reale Zahlen liefert.
+            </p>
+            <div className="space-y-2">
+              {bikesWithoutTarget.map(bike => {
+                const expenses = bike.expenses?.reduce((sum, exp) => sum + exp.amount, 0) || 0;
+                const breakEven = bike.purchasePrice + expenses;
+                return (
+                  <div key={bike.id} className="flex items-center gap-3 bg-slate-900/60 rounded-lg px-3 py-2">
+                    <span className="flex-1 text-sm text-slate-200 truncate">{bike.name}</span>
+                    <span className="text-xs text-slate-500 whitespace-nowrap">Break-Even: {formatCurrency(breakEven)}</span>
+                    <Input
+                      type="number"
+                      placeholder="Ziel VK (€)"
+                      className="h-8 w-32 bg-slate-800 border-red-500/40 focus:border-orange-500 px-2 text-sm"
+                      onBlur={(e) => {
+                        const val = parseFloat(e.target.value);
+                        if (val > 0) {
+                          updateBike(bike.id, { targetSellingPrice: val });
+                          e.target.value = '';
+                        }
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          const val = parseFloat((e.target as HTMLInputElement).value);
+                          if (val > 0) {
+                            updateBike(bike.id, { targetSellingPrice: val });
+                            (e.target as HTMLInputElement).value = '';
+                          }
+                        }
+                      }}
+                    />
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* KPI Header */}
       <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4 mt-4">

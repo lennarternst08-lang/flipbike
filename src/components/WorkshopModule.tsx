@@ -235,6 +235,15 @@ export function WorkshopModule({ bikes, inventoryItems, groupOrders = [], receip
     }
   };
 
+  // Notiz zu einer einzelnen Zeit im Arbeits-Protokoll speichern
+  const updateWorkLogNote = (logId: string, note: string) => {
+    if (!activeBike) return;
+    const updatedWorkLogs = (activeBike.workLogs || []).map(l =>
+      l.id === logId ? { ...l, note: note.trim() } : l
+    );
+    updateBike(activeBike.id, { workLogs: updatedWorkLogs });
+  };
+
   const handleAddExpense = () => {
     if (!activeBike || !expenseDesc || !expenseAmount) return;
     const amount = parseFloat(expenseAmount.replace(',', '.'));
@@ -1100,34 +1109,42 @@ export function WorkshopModule({ bikes, inventoryItems, groupOrders = [], receip
                     <p className="text-sm text-slate-500 text-center py-2">Noch keine Zeiten erfasst</p>
                   ) : (
                     [...(activeBike.workLogs || [])].reverse().map(log => (
-                      <div key={log.id} className="flex items-center justify-between p-2.5 rounded-lg bg-slate-800/50 hover:bg-slate-800 transition-colors group">
-                        <div className="flex flex-col">
+                      <div key={log.id} className="p-2.5 rounded-lg bg-slate-800/50 hover:bg-slate-800 transition-colors group">
+                        <div className="flex items-center justify-between">
                           <span className="text-sm text-slate-300">
                             {new Date(log.timestamp).toLocaleDateString('de-DE')} {new Date(log.timestamp).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}
                           </span>
+                          <div className="flex items-center space-x-3">
+                            <span className="text-sm font-mono text-slate-400">
+                              {formatTime(log.durationSeconds)}
+                            </span>
+                            <button
+                              onClick={() => {
+                                  const updatedWorkLogs = activeBike.workLogs!.filter(l => l.id !== log.id);
+                                  updateBike(activeBike.id, {
+                                    workLogs: updatedWorkLogs,
+                                    timeSpentSeconds: increment(-log.durationSeconds) as any
+                                  });
+                                  // Update local time state if not running
+                                  if (!isRunning) {
+                                    setTime(Math.max(0, (activeBike.timeSpentSeconds || 0) - log.durationSeconds));
+                                  }
+                              }}
+                              className="text-slate-600 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity"
+                              title="Eintrag löschen"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
                         </div>
-                        <div className="flex items-center space-x-3">
-                          <span className="text-sm font-mono text-slate-400">
-                            {formatTime(log.durationSeconds)}
-                          </span>
-                          <button
-                            onClick={() => {
-                                const updatedWorkLogs = activeBike.workLogs!.filter(l => l.id !== log.id);
-                                updateBike(activeBike.id, {
-                                  workLogs: updatedWorkLogs,
-                                  timeSpentSeconds: increment(-log.durationSeconds) as any
-                                });
-                                // Update local time state if not running
-                                if (!isRunning) {
-                                  setTime(Math.max(0, (activeBike.timeSpentSeconds || 0) - log.durationSeconds));
-                                }
-                            }}
-                            className="text-slate-600 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity"
-                            title="Eintrag löschen"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        </div>
+                        <input
+                          type="text"
+                          defaultValue={log.note || ''}
+                          onBlur={(e) => { if ((e.target.value.trim() || '') !== (log.note || '')) updateWorkLogNote(log.id, e.target.value); }}
+                          onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+                          placeholder="Notiz zu dieser Zeit…"
+                          className="mt-2 w-full bg-slate-900/50 border border-slate-700/40 rounded px-2 py-1 text-xs text-slate-300 placeholder:text-slate-600 focus:outline-none focus:border-orange-500/50 focus:bg-slate-900 transition-colors"
+                        />
                       </div>
                     ))
                   )}

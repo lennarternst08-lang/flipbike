@@ -1462,8 +1462,6 @@ function App() {
     const tiedCap = activeBikes.reduce((acc, b) => acc + b.purchasePrice + b.expenses.reduce((s, e) => s + e.amount, 0), 0);
     const infCap = infraBikes.reduce((acc, b) => acc + b.purchasePrice + b.expenses.reduce((s, e) => s + e.amount, 0), 0);
 
-    // Geschäfts-Stundenlohn (alle Kosten / gesamte Zeit), Lagerwert, Ø Standzeit
-    const geschHw = totalTimeh > 0 ? profit / totalTimeh : 0;
     const lagerwert = inventoryItems.reduce((acc, item) => acc + (item.quantity * item.pricePerUnit), 0);
     const standzeitBikes = bikes.filter(b => b.listedAt && b.soldAt);
     const avgStandzeit = standzeitBikes.length > 0
@@ -1479,6 +1477,13 @@ function App() {
       flyerHist = JSON.parse(localStorage.getItem('flyerTracking_history') || "[]");
     } catch(e){}
 
+    // Geschäfts-Stundenlohn (alle Kosten / gesamte Zeit inkl. Flyer-Verteilzeit)
+    const flyerDurationH = Array.isArray(flyerAreas)
+      ? flyerAreas.reduce((s: number, a: any) => s + (Number(a.durationMinutes) || 0) / 60, 0)
+      : 0;
+    const geschTimeH = totalTimeh + flyerDurationH;
+    const geschHw = geschTimeH > 0 ? profit / geschTimeH : 0;
+
     const report = {
       _cfg: {
          v: "1.2", pt: new Date().toISOString(), desc: "Full dataset dump for AI. Keys are minified."
@@ -1491,12 +1496,14 @@ function App() {
            tp: "targetSellPrice (Ziel-VK / angepeilter Verkaufspreis, null wenn nicht gesetzt)",
            exp: "expenses array (materials used from inventory or external: a=amount, d=desc, id=invId, dt=date, cat=category z.B. kleinanzeigen)",
            tz: "timeSpentSeconds",
+           wl: "workLogs (einzelne Arbeitszeiten): dt=timestamp, s=durationSeconds, n=note (frei beschriftbare Notiz zur Zeit)",
            rcv: "receivedAt (Eingang)", lst: "listedAt (inseriert am)", sld: "soldAt (verkauft am)",
            acq: "acquisitionSource: flyer=Flyer-Akquise, kleinanzeigen=Kleinanzeigen, null=unbekannt"
          },
          inv: { iq: "initialQuantity", q: "currentQuantity", c: "pricePerUnit", oId: "Group order id" },
          go: { c: "totalCost", n: "name", dt: "date" },
          svcReq: { iss: "issue", drop: "dropoff", st: "status" },
+         logs: "Aktivitäts-/Zeitprotokoll (ts=timestamp ms, m=message inkl. 'Flyer verteilen'-Einträgen & Notizen, mod=module)",
          flyerHistory: { ts: "log timestamp ISO", act: "add|edit|delete", fc: "flyerCount", dt: "distributedDate", st: "status (geplant/erledigt)" }
       },
       stats: {
@@ -1521,6 +1528,7 @@ function App() {
         tp: b.targetSellingPrice ?? null,
         exp: b.expenses.map(e => ({ a: e.amount, d: e.description, dt: e.date, id: e.sourceInventoryId, cat: e.category })),
         tz: b.timeSpentSeconds,
+        wl: (b.workLogs || []).map(w => ({ dt: w.timestamp, s: w.durationSeconds, n: w.note && w.note.trim() ? w.note : undefined })),
         rcv: b.receivedAt || null,
         lst: b.listedAt || null,
         sld: b.soldAt || null,
@@ -1542,9 +1550,11 @@ function App() {
       sysTodos: dailyTodos.map(d => ({
         t: d.text, c: d.completed
       })),
+      logs: logs.map(l => ({ ts: l.timestamp, m: l.message, mod: l.module })),
       flyer: {
         areas: flyerAreas.length,
         distd: flyerAreas.reduce((sum: number, a: any) => sum + (a.flyerCount || 0), 0),
+        durationMin: Math.round(flyerDurationH * 60), // Gesamte Flyer-Verteilzeit in Minuten (fließt in geschHw)
         excHouses: flyerExc.length,
         byStatus: {
           erledigt: flyerAreas.filter((a: any) => a.status === 'erledigt' || !a.status).length,
@@ -1557,6 +1567,7 @@ function App() {
           flyerCount: a.flyerCount || 0,
           date: a.distributedDate || null,
           status: a.status || 'erledigt',
+          durationMin: a.durationMinutes || 0,
           note: a.note || '',
         })),
         history: flyerHist.map((h: any) => ({
