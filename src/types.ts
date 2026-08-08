@@ -36,6 +36,39 @@ export interface ChecklistItem {
   completed: boolean;
 }
 
+// Einzelner bekannter Mangel für den Kaufvertrag (Ziffer 2)
+export interface BikeDefect {
+  id: string;
+  text: string;
+}
+
+// Fahrrad-Stammdaten für den vorausgefüllten Kaufvertrag.
+// Alle Felder optional & frei lassbar – ein Fahrrad kann jederzeit ohne
+// vollständige Details angelegt werden (keine Pflichtfelder).
+export interface BikeDetails {
+  // 1. Kaufgegenstand (Fahrrad)
+  marke?: string;
+  modell?: string;
+  rahmennummer?: string;
+  laufradgroesse?: string;   // Zoll
+  rahmenhoehe?: string;      // Rahmenhöhe / Größe
+  farbe?: string;
+  gangschaltung?: string;    // z.B. Shimano Deore
+  anzahlGaenge?: string;     // z.B. 21
+  baujahr?: string;          // ca. Baujahr
+  zubehoer?: string;         // mitverkauftes Zubehör
+  maengel?: BikeDefect[];    // 2. Zustand & bekannte Mängel
+
+  // Käufer & Übergabe – meist erst beim Verkauf ausgefüllt (optional)
+  kaeuferName?: string;
+  kaeuferAnschrift?: string;
+  kaeuferKontakt?: string;   // Telefon / E-Mail
+  verkaufspreis?: string;    // Vertrags-Kaufpreis; leer => sellingPrice/targetSellingPrice
+  zahlweise?: string;        // bar / Überweisung
+  ort?: string;              // Übergabeort
+  datum?: string;            // Übergabedatum (yyyy-mm-dd)
+}
+
 export interface WorkLog {
   id: string;
   timestamp: string;
@@ -76,6 +109,7 @@ export interface Bike {
   workLogs?: WorkLog[];
   notes: string;
   photos: string[];
+  details?: BikeDetails; // Fahrrad-Stammdaten für den Kaufvertrag
   hiddenInWorkshop?: boolean;
   userId?: string;
   isStandalone?: boolean;

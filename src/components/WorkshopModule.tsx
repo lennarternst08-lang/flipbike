@@ -1,13 +1,15 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Bike, Expense, ChecklistItem, WorkLog, InventoryItem, Receipt, GroupOrder } from '../types';
+import { Bike, BikeDetails, Expense, ChecklistItem, WorkLog, InventoryItem, Receipt, GroupOrder } from '../types';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { formatTime, formatCurrency } from '../lib/utils';
-import { Play, Pause, RotateCcw, Plus, Camera, CheckSquare, Wrench, Trash2, CheckCircle2, Circle, Undo2, Search, Eye, X, Clock, Package, Minus, Folders, Folder } from 'lucide-react';
+import { Play, Pause, RotateCcw, Plus, Camera, CheckSquare, Wrench, Trash2, CheckCircle2, Circle, Undo2, Search, Eye, X, Clock, Package, Minus, Folders, Folder, FileText } from 'lucide-react';
 import { increment, doc, updateDoc, setDoc, deleteDoc } from 'firebase/firestore';
 import { db, auth } from '../firebase';
 import { ReceiptUploader } from './ReceiptUploader';
+import { BikeDetailsFields } from './BikeDetailsFields';
+import { sanitizeDetails, openKaufvertragPrint, detailsCompleteness } from '../lib/kaufvertrag';
 
 interface WorkshopModuleProps {
   bikes: Bike[];
@@ -77,6 +79,34 @@ export function WorkshopModule({ bikes, inventoryItems, groupOrders = [], receip
 
   // Photo preview state
   const [selectedPhoto, setSelectedPhoto] = useState<string | null>(null);
+
+  // --- Kaufvertrag-Details: lokaler Entwurf + entprellter Firestore-Save ---
+  const [details, setDetails] = useState<BikeDetails>(() => sanitizeDetails(activeBike?.details));
+  const detailsTimer = useRef<number | null>(null);
+  const pendingDetails = useRef<{ id: string; d: BikeDetails } | null>(null);
+  const updateBikeRef = useRef(updateBike);
+  updateBikeRef.current = updateBike; // immer die aktuelle updateBike-Referenz (Prop wechselt häufig)
+
+  const flushDetails = () => {
+    if (detailsTimer.current) { clearTimeout(detailsTimer.current); detailsTimer.current = null; }
+    const p = pendingDetails.current;
+    if (p) { updateBikeRef.current(p.id, { details: sanitizeDetails(p.d) }); pendingDetails.current = null; }
+  };
+
+  const persistDetails = (next: BikeDetails) => {
+    setDetails(next);
+    if (!activeBike) return;
+    pendingDetails.current = { id: activeBike.id, d: next };
+    if (detailsTimer.current) clearTimeout(detailsTimer.current);
+    detailsTimer.current = window.setTimeout(flushDetails, 600);
+  };
+
+  // Beim Rad-Wechsel/Verlassen: Entwurf des vorherigen Rads sichern, neues Rad laden
+  useEffect(() => {
+    setDetails(sanitizeDetails(activeBike?.details));
+    return () => { flushDetails(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeBikeId]);
 
   // Monitor online status
   useEffect(() => {
@@ -1152,6 +1182,43 @@ export function WorkshopModule({ bikes, inventoryItems, groupOrders = [], receip
               </div>
             </CardContent>
           </Card>
+
+          {/* Fahrrad-Details & Kaufvertrag (nur für echte Fahrräder) */}
+          {activeBike.status !== 'Material' && activeBike.status !== 'Infrastruktur' && (
+            <Card className="border-orange-500/20">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-lg flex items-center justify-between gap-2">
+                  <span className="flex items-center">
+                    <FileText className="w-5 h-5 mr-2 text-orange-500" />
+                    Fahrrad-Details &amp; Kaufvertrag
+                  </span>
+                  {(() => {
+                    const c = detailsCompleteness(details);
+                    return (
+                      <span className="text-xs font-normal text-slate-400 bg-slate-800 px-2.5 py-1 rounded-full border border-slate-700 whitespace-nowrap">
+                        {c.filled}/{c.total} Felder
+                      </span>
+                    );
+                  })()}
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center gap-3 justify-between bg-slate-800/40 border border-slate-700/50 rounded-lg p-3">
+                  <p className="text-xs text-slate-400 leading-relaxed">
+                    Daten für den vorausgefüllten Kaufvertrag. Alles optional — jederzeit ergänzbar.
+                    Beim Download öffnet sich der fertige Vertrag zum Drucken oder als PDF speichern.
+                  </p>
+                  <Button
+                    onClick={() => { flushDetails(); openKaufvertragPrint(activeBike, sanitizeDetails(details)); }}
+                    className="bg-orange-500 hover:bg-orange-600 text-white shrink-0 shadow-lg shadow-orange-500/20"
+                  >
+                    <FileText className="w-4 h-4 mr-2" /> Kaufvertrag herunterladen
+                  </Button>
+                </div>
+                <BikeDetailsFields value={details} onChange={persistDetails} includeContract />
+              </CardContent>
+            </Card>
+          )}
 
           {/* Checklist */}
           <Card>

@@ -4,6 +4,7 @@ import { WorkshopModule } from './components/WorkshopModule';
 import { DailyTodoModule } from './components/DailyTodoModule';
 import { ReceiptsModule } from './components/ReceiptsModule';
 import { Bike, DailyTodo, Log, ServiceRequest, Receipt, InventoryItem, GroupOrder } from './types';
+import { sanitizeDetails } from './lib/kaufvertrag';
 import { BarChart3, Wrench, CheckSquare, Download, FileText, Image, User, X, LogIn, LogOut, RotateCcw, Calendar, RefreshCw, CloudUpload } from 'lucide-react';
 import { auth, db, signInWithGoogle, logout } from './firebase';
 import { onAuthStateChanged } from 'firebase/auth';
@@ -1218,6 +1219,7 @@ function App() {
       checklist: [],
       notes: newBikeData.notes || '',
       photos: [],
+      details: sanitizeDetails(newBikeData.details), // immer definiert (kein undefined → Firestore-sicher)
       userId: auth.currentUser?.uid,
       acquisitionSource: newBikeData.acquisitionSource || undefined
     };

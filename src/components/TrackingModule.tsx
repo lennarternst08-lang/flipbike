@@ -17,8 +17,10 @@ import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { formatCurrency, formatTime } from '../lib/utils';
-import { TrendingUp, Clock, Wallet, Plus, Search, Filter, ArrowUpDown, ArrowUp, ArrowDown, MoreVertical, Trash2, Edit2, Star, ChevronDown, ChevronUp, X, Check, FileCheck, Eye, EyeOff, Play, Pause, RotateCcw, Megaphone, Monitor } from 'lucide-react';
+import { TrendingUp, Clock, Wallet, Plus, Search, Filter, ArrowUpDown, ArrowUp, ArrowDown, MoreVertical, Trash2, Edit2, Star, ChevronDown, ChevronUp, X, Check, FileCheck, Eye, EyeOff, Play, Pause, RotateCcw, Megaphone, Monitor, FileText } from 'lucide-react';
 import { ReceiptUploader } from './ReceiptUploader';
+import { BikeDetailsFields } from './BikeDetailsFields';
+import { emptyBikeDetails, openKaufvertragPrint } from '../lib/kaufvertrag';
 import { doc, deleteDoc, setDoc, getDoc } from 'firebase/firestore';
 import { db, auth } from '../firebase';
 import { onAuthStateChanged } from 'firebase/auth';
@@ -149,6 +151,7 @@ export function TrackingModule({
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
 
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [showAddDetails, setShowAddDetails] = useState(false); // Kaufvertrag-Details im Add-Dialog ein/ausklappen
 
   // Erweiterung #3: Selektions-Scorecard (Ankauf-Entscheidungshilfe)
   const [isScorecardOpen, setIsScorecardOpen] = useState(false);
@@ -395,13 +398,15 @@ export function TrackingModule({
     if (!newBikeData.name) return;
     addBike(newBikeData);
     setIsAddModalOpen(false);
+    setShowAddDetails(false);
     setNewBikeData({
       name: '',
       purchaseDate: new Date().toISOString().split('T')[0],
       purchasePrice: 0,
       targetSellingPrice: 0,
       status: 'Zu reparieren',
-      acquisitionSource: 'flyer'
+      acquisitionSource: 'flyer',
+      details: emptyBikeDetails()
     });
   };
 
@@ -1334,6 +1339,14 @@ export function TrackingModule({
                                     >
                                       <Edit2 className="w-3 h-3 mr-2" /> Umbenennen
                                     </button>
+                                    {bike.status !== 'Material' && bike.status !== 'Infrastruktur' && (
+                                      <button
+                                        onClick={(e) => { e.stopPropagation(); openKaufvertragPrint(bike); setOpenMenuId(null); }}
+                                        className="w-full text-left px-4 py-2 text-sm text-slate-300 hover:bg-slate-700 hover:text-white flex items-center"
+                                      >
+                                        <FileText className="w-3 h-3 mr-2" /> Kaufvertrag drucken
+                                      </button>
+                                    )}
                                     {/* Akquise-Quelle */}
                                     <div className="px-3 py-2">
                                       <p className="text-[10px] uppercase font-bold text-slate-500 tracking-wider mb-1.5">Akquise-Quelle</p>
@@ -2365,7 +2378,7 @@ export function TrackingModule({
       {/* Add Bike Modal */}
       {isAddModalOpen && (
         <div className="fixed inset-0 z-50 flex justify-center bg-slate-950/80 backdrop-blur-sm p-4 overflow-y-auto">
-          <Card className="w-full max-w-md bg-slate-900 border-slate-800 shadow-2xl animate-in zoom-in-95 duration-200 my-auto">
+          <Card className="w-full max-w-lg bg-slate-900 border-slate-800 shadow-2xl animate-in zoom-in-95 duration-200 my-8">
             <CardHeader>
               <CardTitle>{newBikeData.status === 'Material' ? 'Neues Material hinzufügen' : newBikeData.status === 'Infrastruktur' ? 'Neue Infrastruktur hinzufügen' : 'Neues Fahrrad hinzufügen'}</CardTitle>
             </CardHeader>
@@ -2472,6 +2485,34 @@ export function TrackingModule({
                       <Monitor className="w-3.5 h-3.5" /> Kleinanzeigen
                     </button>
                   </div>
+                </div>
+              )}
+              {/* Fahrrad-Details für den Kaufvertrag (optional, ausklappbar) — nur für echte Fahrräder */}
+              {newBikeData.status !== 'Material' && newBikeData.status !== 'Infrastruktur' && (
+                <div className="border-t border-slate-800 pt-3">
+                  <button
+                    type="button"
+                    onClick={() => setShowAddDetails(v => !v)}
+                    className="w-full flex items-center justify-between text-sm font-medium text-slate-300 hover:text-white transition-colors"
+                  >
+                    <span className="flex items-center">
+                      <FileText className="w-4 h-4 mr-2 text-orange-500" />
+                      Fahrrad-Details für Kaufvertrag
+                      <span className="text-slate-500 ml-1.5 font-normal">(optional)</span>
+                    </span>
+                    {showAddDetails ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                  </button>
+                  {showAddDetails && (
+                    <div className="mt-4">
+                      <p className="text-xs text-slate-500 mb-3">
+                        Alles freiwillig — du kannst das Fahrrad auch ohne Details speichern und sie später in der Werkstatt ergänzen.
+                      </p>
+                      <BikeDetailsFields
+                        value={newBikeData.details ?? emptyBikeDetails()}
+                        onChange={(d) => setNewBikeData({ ...newBikeData, details: d })}
+                      />
+                    </div>
+                  )}
                 </div>
               )}
               <div className="flex justify-end space-x-3 pt-4">
