@@ -4,12 +4,13 @@ import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { formatTime, formatCurrency } from '../lib/utils';
-import { Play, Pause, RotateCcw, Plus, Camera, CheckSquare, Wrench, Trash2, CheckCircle2, Circle, Undo2, Search, Eye, X, Clock, Package, Minus, Folders, Folder, FileText } from 'lucide-react';
+import { Play, Pause, RotateCcw, Plus, Camera, CheckSquare, Wrench, Trash2, CheckCircle2, Circle, Undo2, Search, Eye, X, Clock, Package, Minus, Folders, Folder, FileText, Check, Sparkles } from 'lucide-react';
 import { increment, doc, updateDoc, setDoc, deleteDoc } from 'firebase/firestore';
 import { db, auth } from '../firebase';
 import { ReceiptUploader } from './ReceiptUploader';
 import { BikeDetailsFields } from './BikeDetailsFields';
 import { sanitizeDetails, openKaufvertragPrint, detailsCompleteness } from '../lib/kaufvertrag';
+import { PUTZEN_COST, PUTZEN_LABEL, hasPutzen, togglePutzen } from '../lib/expenses';
 
 interface WorkshopModuleProps {
   bikes: Bike[];
@@ -291,6 +292,19 @@ export function WorkshopModule({ bikes, inventoryItems, groupOrders = [], receip
     });
     setExpenseDesc('');
     setExpenseAmount('');
+  };
+
+  // Putzen (Nikita) als Materialausgabe buchen/entfernen
+  const handleTogglePutzen = () => {
+    if (!activeBike) return;
+    const { expenses, added } = togglePutzen(activeBike);
+    updateBike(activeBike.id, { expenses });
+    addLog(
+      added
+        ? `Putzen (Nikita) gebucht für "${activeBike.name}": ${formatCurrency(PUTZEN_COST)}`
+        : `Putzen (Nikita) entfernt für "${activeBike.name}"`,
+      'workshop'
+    );
   };
 
   const handleDeleteExpense = (expenseId: string) => {
@@ -1299,6 +1313,31 @@ export function WorkshopModule({ bikes, inventoryItems, groupOrders = [], receip
             </CardHeader>
             <CardContent>
               <div className="flex flex-col space-y-4 mb-4">
+                {/* Putzen (Nikita) – Pauschale als Materialausgabe */}
+                <button
+                  onClick={handleTogglePutzen}
+                  className={`flex items-center justify-between w-full p-2.5 rounded-lg border transition-colors ${
+                    hasPutzen(activeBike)
+                      ? 'bg-cyan-500/10 border-cyan-500/50'
+                      : 'bg-slate-800/40 border-slate-700 hover:border-cyan-500/40'
+                  }`}
+                >
+                  <span className="flex items-center gap-2.5">
+                    <span className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 transition-colors ${
+                      hasPutzen(activeBike) ? 'bg-cyan-500 border-cyan-500 text-white' : 'border-slate-600'
+                    }`}>
+                      {hasPutzen(activeBike) && <Check className="w-3 h-3" strokeWidth={3} />}
+                    </span>
+                    <span className={`text-sm font-medium ${hasPutzen(activeBike) ? 'text-cyan-300' : 'text-slate-300'}`}>
+                      <Sparkles className="w-3.5 h-3.5 inline-block mr-1.5 -mt-0.5" />
+                      {PUTZEN_LABEL}
+                    </span>
+                  </span>
+                  <span className={`text-sm font-bold ${hasPutzen(activeBike) ? 'text-cyan-400' : 'text-slate-500'}`}>
+                    {formatCurrency(PUTZEN_COST)}
+                  </span>
+                </button>
+
                 <div className="flex space-x-2">
                   <Input
                     placeholder="Teil Manuell..."

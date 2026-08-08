@@ -52,6 +52,7 @@ const serializeArea = (a: DistributedArea, uid: string) => ({
   distributedDate: a.distributedDate || todayISO(),
   status: a.status || 'erledigt',
   durationMinutes: a.durationMinutes || 0,
+  costEuro: a.costEuro || 0,
   createdAt: a.createdAt || Date.now(),
 });
 const deserializeArea = (d: any): DistributedArea => ({
@@ -63,9 +64,12 @@ const deserializeArea = (d: any): DistributedArea => ({
   distributedDate: d.distributedDate || todayISO(),
   status: d.status || 'erledigt',
   durationMinutes: d.durationMinutes || 0,
+  costEuro: d.costEuro || 0,
   createdAt: d.createdAt,
   userId: d.userId,
 });
+
+const formatEuro = (v: number) => new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR' }).format(v || 0);
 
 // Minuten → "1 h 30 min" bzw. "45 min"
 const formatDuration = (mins: number) => {
@@ -107,6 +111,7 @@ export function FlyerTrackingMap({ addLog }: FlyerTrackingMapProps = {}) {
   const [formDate, setFormDate] = useState(todayISO());
   const [formStatus, setFormStatus] = useState<FlyerAreaStatus>('erledigt');
   const [formDuration, setFormDuration] = useState(''); // Verteil-Dauer in Minuten
+  const [formCost, setFormCost] = useState('');         // Kosten in € → Infrastruktur des Monats
 
   // Adresssuche (Geocoding via Nominatim/OSM)
   const [searchQuery, setSearchQuery] = useState('');
@@ -420,6 +425,7 @@ export function FlyerTrackingMap({ addLog }: FlyerTrackingMapProps = {}) {
     setFormDate(todayISO());
     setFormStatus('erledigt');
     setFormDuration('');
+    setFormCost('');
     setShowModal(true);
   };
 
@@ -431,6 +437,7 @@ export function FlyerTrackingMap({ addLog }: FlyerTrackingMapProps = {}) {
     setFormDate(area.distributedDate || todayISO());
     setFormStatus(area.status || 'erledigt');
     setFormDuration(area.durationMinutes ? area.durationMinutes.toString() : '');
+    setFormCost(area.costEuro ? area.costEuro.toString() : '');
     setShowModal(true);
   };
 
@@ -438,16 +445,22 @@ export function FlyerTrackingMap({ addLog }: FlyerTrackingMapProps = {}) {
     const count = parseInt(formCount);
     if (isNaN(count) || count < 0) return;
     const duration = Math.max(0, parseInt(formDuration) || 0);
+    const cost = Math.max(0, parseFloat(formCost.replace(',', '.')) || 0);
     if (editingAreaId) {
       const existing = areas.find((a) => a.id === editingAreaId);
       if (!existing) return;
       const oldDuration = existing.durationMinutes || 0;
-      const updated = { ...existing, flyerCount: count, name: formName.trim(), note: formNote.trim(), distributedDate: formDate, status: formStatus, durationMinutes: duration };
+      const oldCost = existing.costEuro || 0;
+      const updated = { ...existing, flyerCount: count, name: formName.trim(), note: formNote.trim(), distributedDate: formDate, status: formStatus, durationMinutes: duration, costEuro: cost };
       saveArea(updated);
       appendHistory('edit', updated);
       // Dauer-Änderung protokollieren (fließt in Geschäfts-Stundenlohn ein)
       if (duration !== oldDuration && (duration > 0 || oldDuration > 0)) {
         addLog?.(`Flyer verteilen (Dauer geändert): ${updated.name || 'Gebiet'} – ${formatDuration(oldDuration)} → ${formatDuration(duration)}`, 'stopwatch');
+      }
+      // Kosten-Änderung protokollieren (fließt in Infrastruktur des Monats ein)
+      if (cost !== oldCost) {
+        addLog?.(`Flyer-Kosten geändert: ${updated.name || 'Gebiet'} – ${formatEuro(oldCost)} → ${formatEuro(cost)} (Infrastruktur ${formDate.slice(0, 7)})`, 'tracking');
       }
     } else {
       if (drawingPoints.length < 3) return;
@@ -460,6 +473,7 @@ export function FlyerTrackingMap({ addLog }: FlyerTrackingMapProps = {}) {
         distributedDate: formDate,
         status: formStatus,
         durationMinutes: duration,
+        costEuro: cost,
         createdAt: Date.now(),
         userId: uid ?? undefined,
       };
@@ -468,6 +482,10 @@ export function FlyerTrackingMap({ addLog }: FlyerTrackingMapProps = {}) {
       // Verteil-Dauer als Zeiteintrag protokollieren (fließt in Geschäfts-Stundenlohn ein)
       if (duration > 0) {
         addLog?.(`Flyer verteilen: ${created.name || 'Gebiet'} (${count} Flyer) – ${formatDuration(duration)}`, 'stopwatch');
+      }
+      // Kosten protokollieren (fließt in Infrastruktur des Monats ein)
+      if (cost > 0) {
+        addLog?.(`Flyer-Kosten erfasst: ${created.name || 'Gebiet'} – ${formatEuro(cost)} (Infrastruktur ${formDate.slice(0, 7)})`, 'tracking');
       }
       setMode('idle');
       setDrawingPoints([]);
@@ -482,6 +500,7 @@ export function FlyerTrackingMap({ addLog }: FlyerTrackingMapProps = {}) {
     setFormName('');
     setFormNote('');
     setFormDuration('');
+    setFormCost('');
   };
 
   const cancelDrawing = () => {
@@ -542,7 +561,7 @@ export function FlyerTrackingMap({ addLog }: FlyerTrackingMapProps = {}) {
   };
 
   const handleExportCsv = () => {
-    const header = ['Name', 'Datum', 'Status', 'Flyer', 'Flaeche_m2', 'Dichte_Flyer_pro_ha'];
+    const header = ['Name', 'Datum', 'Status', 'Flyer', 'Flaeche_m2', 'Dichte_Flyer_pro_ha', 'Dauer_min', 'Kosten_EUR'];
     const rows = areas.map((a) => {
       const m2 = polygonAreaM2(a.points);
       const dens = m2 > 0 ? a.flyerCount / (m2 / 10000) : 0;
@@ -553,6 +572,8 @@ export function FlyerTrackingMap({ addLog }: FlyerTrackingMapProps = {}) {
         a.flyerCount,
         Math.round(m2),
         Math.round(dens),
+        a.durationMinutes || 0,
+        (a.costEuro || 0).toFixed(2),
       ].join(',');
     });
     downloadBlob([header.join(','), ...rows].join('\n'), `flyer-tracking-${todayISO()}.csv`, 'text/csv');
@@ -564,7 +585,7 @@ export function FlyerTrackingMap({ addLog }: FlyerTrackingMapProps = {}) {
       features: [
         ...areas.map((a) => ({
           type: 'Feature',
-          properties: { kind: 'area', id: a.id, name: a.name, flyerCount: a.flyerCount, distributedDate: a.distributedDate, status: a.status, note: a.note, durationMinutes: a.durationMinutes || 0 },
+          properties: { kind: 'area', id: a.id, name: a.name, flyerCount: a.flyerCount, distributedDate: a.distributedDate, status: a.status, note: a.note, durationMinutes: a.durationMinutes || 0, costEuro: a.costEuro || 0 },
           geometry: { type: 'Polygon', coordinates: [[...a.points, a.points[0]].map(([lat, lng]) => [lng, lat])] },
         })),
         ...excludedHouses.map((h) => ({
@@ -601,6 +622,7 @@ export function FlyerTrackingMap({ addLog }: FlyerTrackingMapProps = {}) {
               distributedDate: f.properties?.distributedDate || todayISO(),
               status: f.properties?.status || 'erledigt',
               durationMinutes: f.properties?.durationMinutes || 0,
+              costEuro: f.properties?.costEuro || 0,
               createdAt: Date.now(),
               userId: uid ?? undefined,
             });
@@ -894,6 +916,10 @@ export function FlyerTrackingMap({ addLog }: FlyerTrackingMapProps = {}) {
                 <label className="text-xs text-slate-400 flex flex-col gap-1">
                   <span className="flex items-center gap-1"><Clock className="w-3 h-3" /> Dauer (Minuten) – fließt in Geschäfts-Stundenlohn</span>
                   <Input type="number" min="0" placeholder="z. B. 45" value={formDuration} onChange={(e) => setFormDuration(e.target.value)} className="bg-slate-800 h-9" />
+                </label>
+                <label className="text-xs text-slate-400 flex flex-col gap-1">
+                  <span className="flex items-center gap-1"><Euro className="w-3 h-3" /> Kosten (€) – fließt in Infrastruktur des Monats</span>
+                  <Input type="number" min="0" step="0.01" placeholder="z. B. 25" value={formCost} onChange={(e) => setFormCost(e.target.value)} className="bg-slate-800 h-9" />
                 </label>
                 <Input placeholder="Notiz (optional)" value={formNote} onChange={(e) => setFormNote(e.target.value)} className="bg-slate-800" />
                 <div className="flex space-x-2 pt-1">

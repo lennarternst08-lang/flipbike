@@ -21,6 +21,7 @@ import { TrendingUp, Clock, Wallet, Plus, Search, Filter, ArrowUpDown, ArrowUp, 
 import { ReceiptUploader } from './ReceiptUploader';
 import { BikeDetailsFields } from './BikeDetailsFields';
 import { emptyBikeDetails, openKaufvertragPrint } from '../lib/kaufvertrag';
+import { PUTZEN_COST, hasPutzen, togglePutzen } from '../lib/expenses';
 import { doc, deleteDoc, setDoc, getDoc } from 'firebase/firestore';
 import { db, auth } from '../firebase';
 import { onAuthStateChanged } from 'firebase/auth';
@@ -362,6 +363,18 @@ export function TrackingModule({
     }
   };
 
+  // Putzen (Nikita) als Materialausgabe buchen/entfernen – direkt aus der Tabelle
+  const handleTogglePutzen = (bike: Bike) => {
+    const { expenses, added } = togglePutzen(bike);
+    updateBike(bike.id, { expenses });
+    addLog(
+      added
+        ? `Putzen (Nikita) gebucht für "${bike.name}": ${formatCurrency(PUTZEN_COST)}`
+        : `Putzen (Nikita) entfernt für "${bike.name}"`,
+      'workshop'
+    );
+  };
+
   const confirmSale = () => {
     if (salePromptBikeId) {
       updateBike(salePromptBikeId, {
@@ -410,9 +423,43 @@ export function TrackingModule({
     });
   };
 
+  // Flyer-Gebiete (aus dem Flyer-Tracking, lokal gespiegelt)
+  const flyerAreas = React.useMemo<any[]>(() => {
+    try {
+      const areas = JSON.parse(localStorage.getItem('flyerTracking_areas') || '[]');
+      return Array.isArray(areas) ? areas : [];
+    } catch {
+      return [];
+    }
+  }, [bikes]); // bikes ändert sich häufig → hält den Wert beim Tab-Wechsel aktuell
+
+  // Flyer-Verteilzeit → zählt als Arbeitszeit
+  const flyerDurationSeconds = React.useMemo(
+    () => flyerAreas.reduce((sum, a) => sum + (Number(a.durationMinutes) || 0) * 60, 0),
+    [flyerAreas]
+  );
+
+  // Flyer-Kosten je Monat (yyyy-MM) → fließen in die Infrastruktur des jeweiligen Monats
+  const flyerCostByMonth = React.useMemo(() => {
+    const map: Record<string, number> = {};
+    flyerAreas.forEach(a => {
+      const cost = Number(a.costEuro) || 0;
+      if (cost <= 0) return;
+      const monthKey = (a.distributedDate || '').slice(0, 7);
+      if (!monthKey) return;
+      map[monthKey] = (map[monthKey] || 0) + cost;
+    });
+    return map;
+  }, [flyerAreas]);
+
+  const flyerCostTotal = React.useMemo(
+    () => Object.values(flyerCostByMonth).reduce((s, v) => s + v, 0),
+    [flyerCostByMonth]
+  );
+
   // Calculate KPIs
   const soldBikes = bikes.filter((b) => b.status === 'Verkauft');
-  
+
   const totalUmsatz = soldBikes.reduce((acc, bike) => acc + (bike.sellingPrice || 0), 0);
 
   // Gesamtgewinn = Cashflow (Alle Einnahmen - Alle Ausgaben)
@@ -429,7 +476,7 @@ export function TrackingModule({
       bikeFlow += (bike.sellingPrice || 0);
     }
     return acc + bikeFlow;
-  }, 0) - totalInventoryCostTracking - totalGroupOrderCostTracking;
+  }, 0) - totalInventoryCostTracking - totalGroupOrderCostTracking - flyerCostTotal;
 
   // Stundenlohn = Nur für verkaufte Fahrräder (Gewinn der verkauften / Zeit der verkauften)
   const soldBikesProfit = soldBikes.reduce((acc, bike) => {
@@ -443,17 +490,6 @@ export function TrackingModule({
     ? soldBikesProfit / (totalTimeSeconds / 3600)
     : 0;
 
-  // Flyer-Verteilzeit (aus dem Flyer-Tracking, lokal gespiegelt) → zählt als Arbeitszeit
-  const flyerDurationSeconds = React.useMemo(() => {
-    try {
-      const areas = JSON.parse(localStorage.getItem('flyerTracking_areas') || '[]');
-      return Array.isArray(areas)
-        ? areas.reduce((sum: number, a: any) => sum + (Number(a.durationMinutes) || 0) * 60, 0)
-        : 0;
-    } catch {
-      return 0;
-    }
-  }, [bikes]); // bikes ändert sich häufig → hält den Wert beim Tab-Wechsel aktuell
 
   // Bug #1: Geschäfts-Stundenlohn = Nettogewinn / gesamte erfasste Zeit (alle Räder + operative Zeit + Flyer-Zeit, alle Kosten)
   const totalAllTimeSeconds = bikes.reduce((acc, bike) => acc + bike.timeSpentSeconds, 0) + univTime + flyerDurationSeconds;
@@ -566,6 +602,14 @@ export function TrackingModule({
       }
     });
 
+    // Flyer-Verteilkosten (Infrastruktur) am Verteil-Datum
+    flyerAreas.forEach(a => {
+      const cost = Number(a.costEuro) || 0;
+      if (cost > 0 && a.distributedDate && isSamePeriod(parseISO(a.distributedDate), period, timeframe)) {
+        invest += cost;
+      }
+    });
+
     return invest;
   });
 
@@ -640,6 +684,14 @@ export function TrackingModule({
          materialExpenses.push({ bikeName: 'Material', desc: `${item.name} (${item.initialQuantity || item.quantity}x)`, amount: cost });
       }
     });
+
+    flyerAreas.forEach(a => {
+      const cost = Number(a.costEuro) || 0;
+      if (cost > 0 && a.distributedDate && isSamePeriod(parseISO(a.distributedDate), period, timeframe)) {
+        totalExpenses += cost;
+        materialExpenses.push({ bikeName: 'Flyer', desc: a.name || 'Flyer-Verteilung', amount: cost });
+      }
+    });
     
     const balance = totalSellingPrice - totalPurchasePrice - totalExpenses;
 
@@ -683,6 +735,13 @@ export function TrackingModule({
     inventoryItems.forEach(item => {
       if (!item.orderId && item.purchaseDate && parseISO(item.purchaseDate) <= end) {
         profit -= item.pricePerUnit * (item.initialQuantity || item.quantity);
+      }
+    });
+
+    flyerAreas.forEach(a => {
+      const cost = Number(a.costEuro) || 0;
+      if (cost > 0 && a.distributedDate && parseISO(a.distributedDate) <= end) {
+        profit -= cost;
       }
     });
 
@@ -960,11 +1019,13 @@ export function TrackingModule({
     addLog(`"${item.name}" als eigenständiges Projekt extrahiert`, 'tracking');
   };
 
-  const activeMaterialMonth = selectedMonthAggregate 
+  const activeMaterialMonth = selectedMonthAggregate
     ? {
        bikes: bikes.filter(b => (b.status === 'Infrastruktur' || b.status === 'Material') && b.purchaseDate && b.purchaseDate.startsWith(selectedMonthAggregate)),
        inventory: inventoryItems.filter(i => i.purchaseDate && i.purchaseDate.startsWith(selectedMonthAggregate) && !i.orderId),
-       orders: groupOrders?.filter(o => o.date && o.date.startsWith(selectedMonthAggregate)) || []
+       orders: groupOrders?.filter(o => o.date && o.date.startsWith(selectedMonthAggregate)) || [],
+       // Flyer-Verteilungen mit Kosten in diesem Monat
+       flyer: flyerAreas.filter(a => (Number(a.costEuro) || 0) > 0 && (a.distributedDate || '').startsWith(selectedMonthAggregate))
       }
     : null;
 
@@ -990,12 +1051,10 @@ export function TrackingModule({
 
     const monthGroups: Record<string, Bike> = {};
 
-    infraMaterialBikes.forEach(bike => {
-      const date = parseISO(bike.purchaseDate);
-      const monthKey = format(date, 'yyyy-MM');
-      const monthName = format(date, 'MMMM yyyy', { locale: de });
-
+    // Monats-Sammelposten anlegen bzw. holen (yyyy-MM)
+    const ensureMonth = (monthKey: string): Bike => {
       if (!monthGroups[monthKey]) {
+        const monthName = format(parseISO(`${monthKey}-01`), 'MMMM yyyy', { locale: de });
         monthGroups[monthKey] = {
           id: `monthly-mat-${monthKey}`,
           name: `Infrastruktur & Material - ${monthName}`,
@@ -1013,37 +1072,26 @@ export function TrackingModule({
           photos: [],
         };
       }
-      monthGroups[monthKey].purchasePrice += bike.purchasePrice;
+      return monthGroups[monthKey];
+    };
+
+    infraMaterialBikes.forEach(bike => {
+      const monthKey = format(parseISO(bike.purchaseDate), 'yyyy-MM');
+      ensureMonth(monthKey).purchasePrice += bike.purchasePrice;
     });
 
     inventoryItems.forEach(item => {
-      const date = parseISO(item.purchaseDate);
-      const monthKey = format(date, 'yyyy-MM');
-      const monthName = format(date, 'MMMM yyyy', { locale: de });
+      const monthKey = format(parseISO(item.purchaseDate), 'yyyy-MM');
+      ensureMonth(monthKey).purchasePrice += (item.pricePerUnit * item.quantity);
+    });
 
-      if (!monthGroups[monthKey]) {
-        monthGroups[monthKey] = {
-          id: `monthly-mat-${monthKey}`,
-          name: `Infrastruktur & Material - ${monthName}`,
-          status: 'Material',
-          purchasePrice: 0,
-          purchaseDate: `${monthKey}-01`,
-          sellingPrice: null,
-          saleDate: null,
-          targetSellingPrice: null,
-          timeSpentSeconds: 0,
-          lastModified: Date.now(),
-          expenses: [],
-          checklist: [],
-          notes: '',
-          photos: [],
-        };
-      }
-      monthGroups[monthKey].purchasePrice += (item.pricePerUnit * item.quantity);
+    // Flyer-Verteilkosten zählen als Infrastruktur des jeweiligen Monats
+    Object.entries(flyerCostByMonth).forEach(([monthKey, cost]) => {
+      ensureMonth(monthKey).purchasePrice += cost;
     });
 
     return [...regularBikes, ...Object.values(monthGroups)];
-  }, [bikes, inventoryItems]);
+  }, [bikes, inventoryItems, flyerCostByMonth]);
 
   const filteredBikes = aggregatedBikes
     .filter(b => {
@@ -1272,6 +1320,7 @@ export function TrackingModule({
                 <tr>
                   <th className="px-2 py-3 cursor-pointer hover:bg-slate-700/50 sticky left-0 z-40 bg-slate-800 border-r border-slate-700/50 min-w-[120px]" onClick={() => handleSort('name')}>Fahrrad ({filteredBikes.length}) <SortIcon field="name" /></th>
                   <th className="px-1 py-3 border-b border-slate-700/50 w-8 text-center" title="Akquise-Quelle (FL = Flyer, KA = Kleinanzeigen)">Src</th>
+                  <th className="px-1 py-3 border-b border-slate-700/50 w-8 text-center" title={`Putzen durch Nikita (${formatCurrency(PUTZEN_COST)}) – zum Buchen anklicken`}>Ptz</th>
                   <th className="px-2 py-3 cursor-pointer hover:bg-slate-700/50 border-b border-slate-700/50" onClick={() => handleSort('status')}>Status <SortIcon field="status" /></th>
                   <th className="px-2 py-3 cursor-pointer hover:bg-slate-700/50 border-b border-slate-700/50" onClick={() => handleSort('purchaseDate')}>Ankauf <SortIcon field="purchaseDate" /></th>
                   <th className="px-2 py-3 cursor-pointer hover:bg-slate-700/50 border-b border-slate-700/50" onClick={() => handleSort('purchasePrice')}>EK (€) <SortIcon field="purchasePrice" /></th>
@@ -1490,6 +1539,24 @@ export function TrackingModule({
                           <span title="Kleinanzeigen">
                             <Monitor className="w-3.5 h-3.5 text-blue-400 inline-block" />
                           </span>
+                        )}
+                      </td>
+                      <td className="px-1 py-2 text-center w-8">
+                        {/* Putzen (Nikita) als Materialausgabe an-/abwählen */}
+                        {!bike.id.startsWith('monthly-mat-') && !bike._isHypothetical && (
+                          <button
+                            onClick={(e) => { e.stopPropagation(); handleTogglePutzen(bike); }}
+                            title={hasPutzen(bike)
+                              ? `Putzen gebucht (${formatCurrency(PUTZEN_COST)}) – Klick entfernt die Ausgabe`
+                              : `Putzen durch Nikita buchen (${formatCurrency(PUTZEN_COST)})`}
+                            className={`w-4 h-4 rounded border flex items-center justify-center transition-colors mx-auto ${
+                              hasPutzen(bike)
+                                ? 'bg-cyan-500 border-cyan-500 text-white'
+                                : 'border-slate-600 hover:border-cyan-400 hover:bg-cyan-500/10'
+                            }`}
+                          >
+                            {hasPutzen(bike) && <Check className="w-3 h-3" strokeWidth={3} />}
+                          </button>
                         )}
                       </td>
                       <td className="px-2 py-2">
@@ -2249,6 +2316,40 @@ export function TrackingModule({
                                </div>
                            );
                         })}
+                     </div>
+                  )}
+               </div>
+
+               {/* Flyer-Verteilkosten dieses Monats */}
+               <div>
+                  <h3 className="text-sm font-semibold uppercase text-slate-500 tracking-wider mt-6 mb-3 flex items-center gap-2">
+                    <Megaphone className="w-4 h-4 text-emerald-400" /> Flyer-Verteilung
+                  </h3>
+                  {activeMaterialMonth.flyer.length === 0 ? (
+                     <p className="text-sm text-slate-500">Keine Flyer-Kosten in diesem Monat.</p>
+                  ) : (
+                     <div className="space-y-2">
+                        {activeMaterialMonth.flyer.map((area: any) => (
+                          <div key={area.id} className="flex flex-col sm:flex-row sm:justify-between items-start sm:items-center gap-2 sm:gap-0 bg-slate-800/50 p-3 rounded-lg border border-slate-700/50">
+                            <div className="flex flex-col">
+                              <span className="font-medium text-slate-200 break-words leading-tight">
+                                {area.name || 'Gebiet ohne Namen'}
+                              </span>
+                              <span className="text-xs text-slate-500 mt-1">
+                                {area.distributedDate}
+                                {area.flyerCount ? ` · ${area.flyerCount} Flyer` : ''}
+                                {area.durationMinutes ? ` · ${area.durationMinutes} min` : ''}
+                              </span>
+                            </div>
+                            <span className="font-bold text-slate-200">{formatCurrency(Number(area.costEuro) || 0)}</span>
+                          </div>
+                        ))}
+                        <div className="flex justify-between items-center pt-2 border-t border-slate-700/50 text-sm">
+                          <span className="text-slate-400">Summe Flyer-Kosten</span>
+                          <span className="font-bold text-emerald-400">
+                            {formatCurrency(flyerCostByMonth[selectedMonthAggregate as string] || 0)}
+                          </span>
+                        </div>
                      </div>
                   )}
                </div>

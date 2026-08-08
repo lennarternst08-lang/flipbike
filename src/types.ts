@@ -6,7 +6,9 @@ export interface Expense {
   amount: number;
   date: string;
   sourceInventoryId?: string;
-  category?: 'kleinanzeigen'; // markiert Inserat-Gebühren (Kleinanzeigen), damit sie zählbar/erkennbar bleiben
+  // markiert Sonder-Ausgaben, damit sie zählbar/erkennbar bleiben:
+  // 'kleinanzeigen' = Inserat-Gebühren, 'putzen' = Reinigung durch Angestellten
+  category?: 'kleinanzeigen' | 'putzen';
 }
 
 export interface GroupOrder {
@@ -140,6 +142,7 @@ export interface DistributedArea {
   distributedDate?: string; // ISO yyyy-mm-dd
   status?: FlyerAreaStatus;
   durationMinutes?: number; // Verteil-Dauer in Minuten → fließt in Geschäfts-Stundenlohn & Logs ein
+  costEuro?: number;        // Kosten der Verteilung (Druck, Helfer o.ä.) → fließt in Infrastruktur des Monats
   createdAt?: number;
   userId?: string;
 }
