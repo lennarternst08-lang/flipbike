@@ -1,14 +1,25 @@
-import { Bike, BikeDetails, BikeDefect } from '../types';
+import { Bike, BikeDetails, BikeDefect, BikeUebergabeArt } from '../types';
 import { formatCurrency } from './utils';
 
 // Fester Verkäufer-Block (gewerblich) – exakt aus dem Muster-Kaufvertrag.
 export const SELLER = {
   name: 'Lennart Benjamin Ernst · Fahrradhandel',
   tagline: 'An- und Verkauf sowie Vermittlung von Fahrrädern',
+  street: 'Helene-Engelbrecht-Straße 21',
+  city: '38124 Braunschweig',
   address: 'Helene-Engelbrecht-Straße 21, 38124 Braunschweig',
   phone: '0162 7055104',
+  // Pflichtangabe für die Widerrufsbelehrung (Empfänger der Widerrufserklärung).
+  email: 'lennarternst08@gmail.com',
   taxNote: 'Kleinunternehmer gemäß § 19 UStG',
 };
+
+// Vorbelegung des Vertragsschluss-Orts bei Abholung in den Geschäftsräumen.
+export const ABHOLUNG_ORT = 'Braunschweig, Helene-Engelbrecht-Straße 21';
+
+// Rücksendekosten müssen konkret beziffert sein – sonst trägt sie der Verkäufer.
+// Ein Fahrrad ist nicht paketversandfähig, daher Speditions-Schätzung.
+export const DEFAULT_RUECKSENDEKOSTEN = 'geschätzt ca. 60–90 € bei Speditionsversand innerhalb Deutschlands';
 
 // Leeres, vollständig definiertes Detail-Objekt (kein undefined → Firestore-sicher).
 export function emptyBikeDetails(): BikeDetails {
@@ -29,8 +40,13 @@ export function emptyBikeDetails(): BikeDetails {
     kaeuferKontakt: '',
     verkaufspreis: '',
     zahlweise: '',
-    ort: '',
+    ort: ABHOLUNG_ORT,
     datum: '',
+    uebergabeArt: 'abholung',
+    lieferadresse: '',
+    vertragsschlussDatum: '',
+    kaeuferEmail: '',
+    ruecksendekosten: DEFAULT_RUECKSENDEKOSTEN,
   };
 }
 
@@ -45,6 +61,7 @@ export function sanitizeDetails(d?: Partial<BikeDetails> | null): BikeDetails {
         .filter((m): m is BikeDefect => !!m && typeof m === 'object')
         .map((m) => ({ id: m.id || Math.random().toString(36).slice(2, 9), text: s(m.text) }))
     : [];
+  const art: BikeUebergabeArt = d.uebergabeArt === 'lieferung' ? 'lieferung' : 'abholung';
   return {
     marke: s(d.marke),
     modell: s(d.modell),
@@ -62,8 +79,14 @@ export function sanitizeDetails(d?: Partial<BikeDetails> | null): BikeDetails {
     kaeuferKontakt: s(d.kaeuferKontakt),
     verkaufspreis: s(d.verkaufspreis),
     zahlweise: s(d.zahlweise),
-    ort: s(d.ort),
+    // Bei Abholung ist der Ort fix; leer lassen wir ihn nur bei Lieferung zu.
+    ort: s(d.ort) || (art === 'abholung' ? ABHOLUNG_ORT : ''),
     datum: s(d.datum),
+    uebergabeArt: art,
+    lieferadresse: s(d.lieferadresse),
+    vertragsschlussDatum: s(d.vertragsschlussDatum),
+    kaeuferEmail: s(d.kaeuferEmail),
+    ruecksendekosten: s(d.ruecksendekosten) || DEFAULT_RUECKSENDEKOSTEN,
   };
 }
 
@@ -81,12 +104,32 @@ export function detailsCompleteness(d?: BikeDetails | null): { filled: number; t
   return { filled, total };
 }
 
+// Pflichtfelder der Lieferungs-Variante: fehlen sie, ist die Widerrufsbelehrung
+// unvollständig (→ Frist verlängert sich auf 12 Monate + 14 Tage).
+export function missingLieferungFields(d?: BikeDetails | null): string[] {
+  const s = sanitizeDetails(d);
+  if (s.uebergabeArt !== 'lieferung') return [];
+  const missing: string[] = [];
+  if (!(s.lieferadresse || '').trim()) missing.push('Lieferadresse');
+  if (!(s.vertragsschlussDatum || '').trim()) missing.push('Datum des Vertragsschlusses');
+  if (!(s.datum || '').trim()) missing.push('Datum der Übergabe / des Warenerhalts');
+  if (!(s.kaeuferEmail || '').trim()) missing.push('E-Mail des Käufers');
+  return missing;
+}
+
 function esc(v: unknown): string {
   return String(v ?? '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
+}
+
+// yyyy-mm-dd → dd.mm.yyyy (Datumsfelder kommen aus <input type="date">)
+function deDate(v?: string): string {
+  const s = (v || '').trim();
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+  return m ? `${m[3]}.${m[2]}.${m[1]}` : s;
 }
 
 // Vertrags-Kaufpreis: manueller Wert schlägt sellingPrice/targetSellingPrice.
@@ -101,8 +144,10 @@ function contractPrice(bike: Bike, d: BikeDetails): string {
 }
 
 // Baut das vollständige HTML-Dokument des Kaufvertrags (A4, druckfertig).
+// Abholung → eine Seite. Lieferung → zwei Seiten (S.2 = Widerruf).
 export function buildKaufvertragHtml(bike: Bike, detailsInput?: BikeDetails): string {
   const d = sanitizeDetails(detailsInput ?? bike.details);
+  const isLieferung = d.uebergabeArt === 'lieferung';
 
   const markeModell = [d.marke, d.modell].map((x) => (x || '').trim()).filter(Boolean).join(' ')
     || esc(bike.name || '');
@@ -127,6 +172,94 @@ export function buildKaufvertragHtml(bike: Bike, detailsInput?: BikeDetails): st
 
   const title = `Kaufvertrag_${(bike.name || 'Fahrrad').replace(/[^\w\-äöüÄÖÜß ]+/g, '').trim().replace(/\s+/g, '_') || 'Fahrrad'}`;
 
+  const footer = `
+    <div class="footer">
+      Zweifach ausgefertigt; jede Partei erhält ein Exemplar. ${esc(SELLER.name)} · ${esc(SELLER.address)} · Tel. ${esc(SELLER.phone)}.
+    </div>`;
+
+  // Ziffer 5: Ortsklausel. Bei Abholung wird nur der Ort dokumentiert –
+  // bewusst OHNE Behauptung einer Rechtsfolge ("kein Widerrufsrecht").
+  const uebergabeKlausel = isLieferung
+    ? `<div class="legal">Die Übergabe des Fahrrads erfolgte durch Lieferung an den Käufer${
+        (d.lieferadresse || '').trim() ? `, ${esc(d.lieferadresse)}` : ''
+      }. Der Vertrag wurde außerhalb der Geschäftsräume des Verkäufers geschlossen. Die Widerrufsbelehrung und das Muster-Widerrufsformular sind diesem Vertrag als Ziffer 6 beigefügt.</div>`
+    : `<div class="legal">Der Vertrag wurde in den Geschäftsräumen des Verkäufers, ${esc(SELLER.street)}, ${esc(SELLER.city)}, geschlossen. Die Übergabe des Fahrrads erfolgte dort.</div>`;
+
+  const lieferFelder = isLieferung
+    ? `<div class="grid">
+        ${field('Lieferadresse (Straße, PLZ, Ort)', esc(d.lieferadresse), { wide: true })}
+        ${field('Datum des Vertragsschlusses', esc(deDate(d.vertragsschlussDatum)))}
+        ${field('Datum der Übergabe / des Warenerhalts', esc(deDate(d.datum)))}
+      </div>`
+    : '';
+
+  // Verjährungsverkürzung 2 → 1 Jahr: nur mit ausdrücklicher, GESONDERTER
+  // Vereinbarung wirksam (§ 476 Abs. 2 BGB) – daher eigenes Kästchen + Unterschrift.
+  const verjaehrungsBox = `
+    <div class="consent-box">
+      <div class="consent-text">
+        <span class="cb">☐</span>
+        <span>Mir ist bekannt, dass die gesetzliche Verjährungsfrist für Mängelansprüche zwei Jahre beträgt. Ich stimme ausdrücklich und gesondert zu, dass sie bei diesem gebrauchten Fahrrad auf <strong>ein Jahr ab Übergabe</strong> verkürzt wird.</span>
+      </div>
+      <div class="consent-sign">
+        <div class="slot">Unterschrift Käufer</div>
+      </div>
+    </div>`;
+
+  // ---- Seite 2: Widerrufsbelehrung (nur bei Lieferung) ----
+  const seite2 = !isLieferung ? '' : `
+  <div class="sheet page-break">
+    <h2 class="first">6. Widerrufsbelehrung</h2>
+
+    <h3>Widerrufsrecht</h3>
+    <div class="legal">Sie haben das Recht, binnen <strong>vierzehn Tagen</strong> ohne Angabe von Gründen diesen Vertrag zu widerrufen. Die Widerrufsfrist beträgt vierzehn Tage ab dem Tag, an dem Sie oder ein von Ihnen benannter Dritter, der nicht der Beförderer ist, das Fahrrad in Besitz genommen haben bzw. hat.</div>
+    <div class="legal">Um Ihr Widerrufsrecht auszuüben, müssen Sie uns</div>
+    <div class="contact-box">
+      <strong>${esc(SELLER.name)}</strong><br />
+      ${esc(SELLER.street)}, ${esc(SELLER.city)}<br />
+      Telefon: ${esc(SELLER.phone)} · E-Mail: ${esc(SELLER.email)}
+    </div>
+    <div class="legal">mittels einer eindeutigen Erklärung (z. B. ein mit der Post versandter Brief oder eine E-Mail) über Ihren Entschluss, diesen Vertrag zu widerrufen, informieren. Sie können dafür das beigefügte Muster-Widerrufsformular verwenden, das jedoch nicht vorgeschrieben ist. Zur Wahrung der Widerrufsfrist reicht es aus, dass Sie die Mitteilung über die Ausübung des Widerrufsrechts vor Ablauf der Widerrufsfrist absenden.</div>
+
+    <h3>Folgen des Widerrufs</h3>
+    <div class="legal">Wenn Sie diesen Vertrag widerrufen, haben wir Ihnen alle Zahlungen, die wir von Ihnen erhalten haben, einschließlich der Lieferkosten (mit Ausnahme der zusätzlichen Kosten, die sich daraus ergeben, dass Sie eine andere Art der Lieferung als die von uns angebotene, günstigste Standardlieferung gewählt haben), unverzüglich und spätestens binnen vierzehn Tagen ab dem Tag zurückzuzahlen, an dem die Mitteilung über Ihren Widerruf dieses Vertrags bei uns eingegangen ist. Für diese Rückzahlung verwenden wir dasselbe Zahlungsmittel, das Sie bei der ursprünglichen Transaktion eingesetzt haben, es sei denn, mit Ihnen wurde ausdrücklich etwas anderes vereinbart; in keinem Fall werden Ihnen wegen dieser Rückzahlung Entgelte berechnet.</div>
+    <div class="legal">Wir können die Rückzahlung verweigern, bis wir das Fahrrad wieder zurückerhalten haben oder bis Sie den Nachweis erbracht haben, dass Sie das Fahrrad zurückgesandt haben, je nachdem, welches der frühere Zeitpunkt ist.</div>
+    <div class="legal">Sie haben das Fahrrad unverzüglich und in jedem Fall spätestens binnen vierzehn Tagen ab dem Tag, an dem Sie uns über den Widerruf dieses Vertrags unterrichten, an uns zurückzusenden oder zu übergeben. Die Frist ist gewahrt, wenn Sie das Fahrrad vor Ablauf der Frist von vierzehn Tagen absenden.</div>
+    <div class="legal"><strong>Rücksendekosten:</strong> Sie tragen die unmittelbaren Kosten der Rücksendung des Fahrrads. Da ein Fahrrad nicht paketversandfähig ist, werden diese Kosten auf <strong>${esc(d.ruecksendekosten)}</strong> geschätzt.</div>
+    <div class="legal"><strong>Wertersatz:</strong> Sie müssen für einen etwaigen Wertverlust des Fahrrads nur aufkommen, wenn dieser Wertverlust auf einen zur Prüfung der Beschaffenheit, Eigenschaften und Funktionsweise des Fahrrads nicht notwendigen Umgang mit ihm zurückzuführen ist.</div>
+
+    <h2>Muster-Widerrufsformular</h2>
+    <div class="form-note">(Wenn Sie den Vertrag widerrufen wollen, dann füllen Sie bitte dieses Formular aus und senden Sie es zurück. Anlage 2 zu Art. 246a EGBGB.)</div>
+    <div class="revoke-form">
+      <div class="legal">An<br />
+        <strong>${esc(SELLER.name)}</strong>, ${esc(SELLER.street)}, ${esc(SELLER.city)}<br />
+        E-Mail: ${esc(SELLER.email)}
+      </div>
+      <div class="legal" style="margin-top:6px">Hiermit widerrufe(n) ich/wir (*) den von mir/uns (*) abgeschlossenen Vertrag über den Kauf des folgenden Fahrrads:</div>
+      <div class="grid">
+        ${field('Fahrrad (Marke / Modell / Rahmennummer)', '', { wide: true })}
+        ${field('Bestellt am / Vertrag geschlossen am', '')}
+        ${field('Erhalten am', '')}
+        ${field('Name des/der Verbraucher(s)', '', { wide: true })}
+        ${field('Anschrift des/der Verbraucher(s)', '', { wide: true })}
+        ${field('Datum', '')}
+        ${field('Unterschrift (nur bei Mitteilung auf Papier)', '')}
+      </div>
+      <div class="form-note">(*) Unzutreffendes streichen.</div>
+    </div>
+
+    <div class="consent-box">
+      <div class="consent-text">
+        <span>Ich habe die Widerrufsbelehrung und das Muster-Widerrufsformular erhalten und zur Kenntnis genommen.</span>
+      </div>
+      <div class="sign">
+        <div class="slot">Ort, Datum</div>
+        <div class="slot">Unterschrift Käufer</div>
+      </div>
+    </div>
+    ${footer}
+  </div>`;
+
   return `<!DOCTYPE html>
 <html lang="de">
 <head>
@@ -135,14 +268,13 @@ export function buildKaufvertragHtml(bike: Bike, detailsInput?: BikeDetails): st
 <title>${esc(title)}</title>
 <style>
   * { box-sizing: border-box; }
-  @page { size: A4 portrait; margin: 13mm 15mm; }
+  @page { size: A4 portrait; margin: 12mm 14mm; }
   html, body { margin: 0; padding: 0; background: #eceff3; }
   body { font-family: "Segoe UI", Arial, Helvetica, sans-serif; color: #14181f; }
   .toolbar {
     position: sticky; top: 0; z-index: 10;
     display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
-    background: #0f172a; color: #e2e8f0; padding: 10px 16px;
-    font-size: 14px;
+    background: #0f172a; color: #e2e8f0; padding: 10px 16px; font-size: 14px;
   }
   .toolbar button {
     background: #f97316; color: #fff; border: 0; border-radius: 8px;
@@ -150,35 +282,46 @@ export function buildKaufvertragHtml(bike: Bike, detailsInput?: BikeDetails): st
   }
   .toolbar button:hover { background: #ea580c; }
   .toolbar .hint { color: #94a3b8; font-size: 12px; }
+  .toolbar .warn { color: #fbbf24; font-size: 12px; font-weight: 600; }
   .sheet {
     background: #fff; color: #14181f;
-    width: 210mm; min-height: 297mm; margin: 14px auto; padding: 13mm 15mm;
+    width: 210mm; min-height: 297mm; margin: 14px auto; padding: 12mm 14mm;
     box-shadow: 0 4px 24px rgba(0,0,0,.18);
-    font-size: 10pt; line-height: 1.32;
+    font-size: 9.6pt; line-height: 1.3;
   }
-  h1 { font-size: 15.5pt; margin: 0; text-align: center; letter-spacing: .2px; }
-  .subtitle { text-align: center; font-size: 9pt; color: #475569; margin: 2px 0 12px; text-transform: uppercase; letter-spacing: 1px; }
-  .seller {
-    border: 1px solid #cbd5e1; border-radius: 6px; padding: 8px 12px; margin-bottom: 12px;
-    background: #f8fafc;
-  }
-  .seller .role { font-size: 8pt; text-transform: uppercase; letter-spacing: .6px; color: #64748b; font-weight: 700; }
-  .seller .name { font-weight: 700; font-size: 10.5pt; }
-  .seller .line { font-size: 9pt; color: #334155; }
-  h2 { font-size: 10.5pt; margin: 14px 0 6px; padding-bottom: 3px; border-bottom: 1.5px solid #14181f; }
-  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px 18px; }
+  h1 { font-size: 15pt; margin: 0; text-align: center; letter-spacing: .2px; }
+  .subtitle { text-align: center; font-size: 8.5pt; color: #475569; margin: 2px 0 10px; text-transform: uppercase; letter-spacing: 1px; }
+  .seller { border: 1px solid #cbd5e1; border-radius: 6px; padding: 7px 11px; margin-bottom: 10px; background: #f8fafc; }
+  .seller .role { font-size: 7.6pt; text-transform: uppercase; letter-spacing: .6px; color: #64748b; font-weight: 700; }
+  .seller .name { font-weight: 700; font-size: 10pt; }
+  .seller .line { font-size: 8.6pt; color: #334155; }
+  h2 { font-size: 10pt; margin: 11px 0 5px; padding-bottom: 3px; border-bottom: 1.5px solid #14181f; }
+  h2.first { margin-top: 0; }
+  h3 { font-size: 9.2pt; margin: 9px 0 3px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 18px; }
   .field.wide { grid-column: 1 / -1; }
-  .field-label { font-size: 7.8pt; color: #64748b; text-transform: uppercase; letter-spacing: .4px; margin-bottom: 1px; }
-  .field-value { min-height: 15px; border-bottom: 1px solid #94a3b8; padding: 1px 2px 2px; font-size: 10pt; white-space: pre-wrap; word-break: break-word; }
-  .legal { font-size: 8.3pt; color: #334155; margin: 5px 0; line-height: 1.3; }
-  .maengel { margin: 4px 0 0; padding-left: 18px; }
-  .maengel li { min-height: 14px; padding: 1px 0; }
-  .blank-lines { display: flex; flex-direction: column; gap: 9px; margin-top: 8px; }
-  .blank-lines span { display: block; border-bottom: 1px solid #94a3b8; height: 12px; }
-  .warranty li { margin-bottom: 3px; }
-  .sign { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; margin-top: 34px; }
-  .sign .slot { border-top: 1px solid #14181f; padding-top: 4px; font-size: 8.5pt; color: #334155; text-align: center; }
-  .footer { margin-top: 16px; padding-top: 8px; border-top: 1px solid #cbd5e1; font-size: 7.6pt; color: #64748b; text-align: center; }
+  .field-label { font-size: 7.4pt; color: #64748b; text-transform: uppercase; letter-spacing: .4px; margin-bottom: 1px; }
+  .field-value { min-height: 14px; border-bottom: 1px solid #94a3b8; padding: 1px 2px 2px; font-size: 9.6pt; white-space: pre-wrap; word-break: break-word; }
+  .legal { font-size: 8pt; color: #334155; margin: 4px 0; line-height: 1.3; text-align: justify; }
+  .maengel { margin: 3px 0 0; padding-left: 17px; }
+  .maengel li { min-height: 13px; padding: 1px 0; font-size: 9.4pt; }
+  .blank-lines { display: flex; flex-direction: column; gap: 8px; margin-top: 7px; }
+  .blank-lines span { display: block; border-bottom: 1px solid #94a3b8; height: 11px; }
+  .warranty li { margin-bottom: 2px; }
+  .contact-box { border: 1px solid #cbd5e1; background: #f8fafc; border-radius: 5px; padding: 6px 10px; margin: 5px 0; font-size: 8.4pt; line-height: 1.4; }
+  /* Unterschriftenblöcke dürfen NIE über einen Seitenumbruch reißen (Beweisproblem). */
+  .sign, .consent-box, .revoke-form { break-inside: avoid; page-break-inside: avoid; }
+  .sign { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; margin-top: 26px; }
+  .sign .slot { border-top: 1px solid #14181f; padding-top: 4px; font-size: 8.2pt; color: #334155; text-align: center; }
+  .consent-box { border: 1.5px solid #14181f; border-radius: 6px; padding: 9px 12px; margin: 12px 0 0; }
+  .consent-text { display: flex; gap: 8px; font-size: 8.4pt; line-height: 1.35; color: #14181f; }
+  .consent-text .cb { font-size: 12pt; line-height: 1; }
+  .consent-sign { margin-top: 20px; display: grid; grid-template-columns: 1fr 1fr; gap: 40px; }
+  .consent-sign .slot { border-top: 1px solid #14181f; padding-top: 4px; font-size: 8.2pt; color: #334155; text-align: center; }
+  .revoke-form { border: 1.5px dashed #64748b; border-radius: 6px; padding: 10px 12px; margin-top: 4px; }
+  .form-note { font-size: 7.6pt; color: #64748b; font-style: italic; margin: 3px 0; }
+  .footer { margin-top: 14px; padding-top: 7px; border-top: 1px solid #cbd5e1; font-size: 7.4pt; color: #64748b; text-align: center; }
+  .page-break { break-before: page; page-break-before: always; }
   @media print {
     html, body { background: #fff; }
     .toolbar { display: none; }
@@ -187,13 +330,15 @@ export function buildKaufvertragHtml(bike: Bike, detailsInput?: BikeDetails): st
 </style>
 </head>
 <body>
-  <div class="toolbar no-print">
+  <div class="toolbar">
     <button onclick="window.print()">🖨️ Drucken / Als PDF speichern</button>
-    <span class="hint">Im Druckdialog „Als PDF speichern" wählen, um den Vertrag als Datei zu sichern.</span>
+    <span class="warn">Im Druckdialog „Kopf- und Fußzeilen" deaktivieren!</span>
+    <span class="hint">${isLieferung ? '2 Seiten (Seite 2 = Widerrufsbelehrung)' : '1 Seite'} · „Als PDF speichern" sichert den Vertrag als Datei.</span>
   </div>
+
   <div class="sheet">
     <h1>Kaufvertrag über ein gebrauchtes Fahrrad</h1>
-    <div class="subtitle">Gewerbliches Angebot</div>
+    <div class="subtitle">Gewerbliches Angebot${isLieferung ? ' · Lieferung' : ''}</div>
 
     <div class="seller">
       <div class="role">Verkäufer (gewerblich)</div>
@@ -207,7 +352,8 @@ export function buildKaufvertragHtml(bike: Bike, detailsInput?: BikeDetails): st
     <div class="grid">
       ${field('Name, Vorname', esc(d.kaeuferName), { wide: true })}
       ${field('Anschrift (Straße, PLZ, Ort)', esc(d.kaeuferAnschrift), { wide: true })}
-      ${field('Telefon / E-Mail', esc(d.kaeuferKontakt), { wide: true })}
+      ${field('Telefon', esc(d.kaeuferKontakt))}
+      ${field('E-Mail', esc(d.kaeuferEmail))}
     </div>
 
     <h2>1. Kaufgegenstand (Fahrrad)</h2>
@@ -235,25 +381,28 @@ export function buildKaufvertragHtml(bike: Bike, detailsInput?: BikeDetails): st
 
     <h2>4. Gewährleistung</h2>
     <ul class="legal warranty">
-      <li>Gewerblicher Verkauf, kein Privatkauf-Risiko: Auf das Fahrrad besteht die gesetzliche Gewährleistung von 1 Jahr ab Übergabe.</li>
+      <li>Gewerblicher Verkauf, kein Privatkauf-Risiko: Auf das Fahrrad besteht die gesetzliche Gewährleistung von 1 Jahr ab Übergabe (siehe gesonderte Vereinbarung unten).</li>
       <li>Ausgenommen sind normale Verschleißteile, insbesondere Reifen/Schläuche, Bremsbeläge, Kette, Kassette/Ritzel, Schalt- und Bremszüge, Beleuchtungsmittel, Griffe, Sattel und Lager im üblichen Umfang.</li>
       <li>Für die unter Ziffer 2 aufgeführten, bekannten Mängel besteht keine Gewährleistung (§ 442 BGB).</li>
     </ul>
 
     <h2>5. Übergabe &amp; Unterschriften</h2>
     <div class="grid">
-      ${field('Ort', esc(d.ort))}
-      ${field('Datum', esc(d.datum))}
+      ${field('Ort des Vertragsschlusses', esc(d.ort))}
+      ${field('Datum der Übergabe', esc(deDate(d.datum)))}
     </div>
+    ${lieferFelder}
+    ${uebergabeKlausel}
+
+    ${verjaehrungsBox}
+
     <div class="sign">
       <div class="slot">Unterschrift Verkäufer</div>
       <div class="slot">Unterschrift Käufer</div>
     </div>
-
-    <div class="footer">
-      Zweifach ausgefertigt; jede Partei erhält ein Exemplar. ${esc(SELLER.name)} · ${esc(SELLER.address)} · Tel. ${esc(SELLER.phone)}.
-    </div>
+    ${footer}
   </div>
+  ${seite2}
 </body>
 </html>`;
 }

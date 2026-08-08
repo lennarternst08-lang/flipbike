@@ -42,6 +42,9 @@ export interface BikeDefect {
   text: string;
 }
 
+// Art des Vertragsschlusses/der Übergabe – entscheidet über das Widerrufsrecht.
+export type BikeUebergabeArt = 'abholung' | 'lieferung';
+
 // Fahrrad-Stammdaten für den vorausgefüllten Kaufvertrag.
 // Alle Felder optional & frei lassbar – ein Fahrrad kann jederzeit ohne
 // vollständige Details angelegt werden (keine Pflichtfelder).
@@ -65,8 +68,17 @@ export interface BikeDetails {
   kaeuferKontakt?: string;   // Telefon / E-Mail
   verkaufspreis?: string;    // Vertrags-Kaufpreis; leer => sellingPrice/targetSellingPrice
   zahlweise?: string;        // bar / Überweisung
-  ort?: string;              // Übergabeort
-  datum?: string;            // Übergabedatum (yyyy-mm-dd)
+  ort?: string;              // Ort des Vertragsschlusses
+  datum?: string;            // Übergabe- / Warenerhalts-Datum (yyyy-mm-dd) → Fristbeginn
+
+  // Vertragsschluss / Übergabe – steuert Widerrufsrecht im generierten Vertrag.
+  // 'abholung'  = in den Geschäftsräumen → kein Widerrufsrecht (§ 312b BGB greift nicht)
+  // 'lieferung' = außerhalb von Geschäftsräumen / Fernabsatz → 14 Tage Widerrufsrecht
+  uebergabeArt?: BikeUebergabeArt;
+  lieferadresse?: string;        // nur bei Lieferung (Pflicht)
+  vertragsschlussDatum?: string; // getrennt von datum: Frist läuft ab Warenerhalt
+  kaeuferEmail?: string;         // für die Widerrufserklärung (Pflicht bei Lieferung)
+  ruecksendekosten?: string;     // konkreter Schätzbetrag; fehlt er, trägt sie der Verkäufer
 }
 
 export interface WorkLog {

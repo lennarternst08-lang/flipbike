@@ -1,7 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { BikeDetails, BikeDefect } from '../types';
+import { BikeDetails, BikeDefect, BikeUebergabeArt } from '../types';
 import { Input } from './ui/input';
-import { Plus, X, AlertTriangle } from 'lucide-react';
+import { Plus, X, AlertTriangle, Home, Truck } from 'lucide-react';
+import { ABHOLUNG_ORT, DEFAULT_RUECKSENDEKOSTEN, missingLieferungFields } from '../lib/kaufvertrag';
 
 interface BikeDetailsFieldsProps {
   value: BikeDetails;
@@ -17,6 +18,24 @@ export function BikeDetailsFields({ value, onChange, includeContract = false }: 
     onChange({ ...value, [key]: val });
 
   const maengel: BikeDefect[] = value.maengel ?? [];
+  const uebergabeArt: BikeUebergabeArt = value.uebergabeArt === 'lieferung' ? 'lieferung' : 'abholung';
+  const isLieferung = uebergabeArt === 'lieferung';
+  const missing = missingLieferungFields(value);
+
+  // Wechsel der Übergabeart: Ort bei Abholung vorbelegen, bei Lieferung leeren –
+  // aber nur, wenn dort noch die jeweilige Vorbelegung steht (nichts überschreiben).
+  const setUebergabeArt = (art: BikeUebergabeArt) => {
+    if (art === uebergabeArt) return;
+    const next: BikeDetails = { ...value, uebergabeArt: art };
+    const ort = (value.ort || '').trim();
+    if (art === 'abholung' && ort === '') {
+      next.ort = ABHOLUNG_ORT;
+    } else if (art === 'lieferung' && ort === ABHOLUNG_ORT) {
+      next.ort = '';
+    }
+    onChange(next);
+  };
+
   const [focusId, setFocusId] = useState<string | null>(null);
   const inputRefs = useRef<Map<string, HTMLInputElement>>(new Map());
 
@@ -148,18 +167,90 @@ export function BikeDetailsFields({ value, onChange, includeContract = false }: 
 
       {/* Käufer & Übergabe (für den fertigen Vertrag) */}
       {includeContract && (
-        <div className="pt-3 border-t border-slate-800">
-          <p className="text-[10px] uppercase font-bold text-slate-500 tracking-wider mb-3">
+        <div className="pt-3 border-t border-slate-800 space-y-4">
+          <p className="text-[10px] uppercase font-bold text-slate-500 tracking-wider">
             Käufer &amp; Übergabe — für den fertigen Vertrag (optional)
           </p>
+
+          {/* Vertragsschluss / Übergabe: steuert das Widerrufsrecht im Vertrag */}
+          <div>
+            <label className={labelCls}>Vertragsschluss / Übergabe</label>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {([
+                { key: 'abholung' as const, icon: Home, title: 'Abholung beim Verkäufer', sub: 'Helene-Engelbrecht-Straße 21' },
+                { key: 'lieferung' as const, icon: Truck, title: 'Lieferung / außerhalb', sub: 'auch Abschluss per Chat' },
+              ]).map(({ key, icon: Icon, title, sub }) => {
+                const active = uebergabeArt === key;
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => setUebergabeArt(key)}
+                    className={`flex items-start gap-2.5 p-3 rounded-lg border text-left transition-colors ${
+                      active
+                        ? 'bg-orange-500/10 border-orange-500/60 text-slate-100'
+                        : 'bg-slate-800/60 border-slate-700 text-slate-400 hover:border-slate-600 hover:text-slate-300'
+                    }`}
+                  >
+                    <span className={`mt-0.5 w-4 h-4 rounded-full border-2 shrink-0 flex items-center justify-center ${
+                      active ? 'border-orange-500' : 'border-slate-600'
+                    }`}>
+                      {active && <span className="w-2 h-2 rounded-full bg-orange-500" />}
+                    </span>
+                    <span className="min-w-0">
+                      <span className="flex items-center gap-1.5 text-sm font-medium">
+                        <Icon className="w-3.5 h-3.5 shrink-0" /> {title}
+                      </span>
+                      <span className="block text-[11px] text-slate-500 mt-0.5">{sub}</span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+            <p className={`text-[11px] mt-2 leading-relaxed ${isLieferung ? 'text-amber-400' : 'text-slate-500'}`}>
+              {isLieferung
+                ? 'Außerhalb der Geschäftsräume bzw. Fernabsatz → 14 Tage Widerrufsrecht. Der Vertrag bekommt Seite 2 mit Widerrufsbelehrung, Muster-Formular und Empfangsbestätigung.'
+                : 'Vertragsschluss in den Geschäftsräumen → einseitiger Vertrag ohne Widerrufsbelehrung.'}
+            </p>
+          </div>
+
+          {/* Fehlende Pflichtangaben der Lieferungs-Variante deutlich anzeigen */}
+          {isLieferung && missing.length > 0 && (
+            <div className="flex items-start gap-2 p-3 rounded-lg border border-amber-500/40 bg-amber-500/10">
+              <AlertTriangle className="w-4 h-4 text-amber-400 mt-0.5 shrink-0" />
+              <p className="text-xs text-amber-300 leading-relaxed">
+                <span className="font-bold">Noch offen:</span> {missing.join(', ')}.
+                <span className="block text-amber-400/80 mt-1">
+                  Ohne vollständige Belehrung verlängert sich die Widerrufsfrist auf 12 Monate + 14 Tage.
+                </span>
+              </p>
+            </div>
+          )}
+
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             {renderField('Käufer — Name, Vorname', 'kaeuferName', { wide: true })}
             {renderField('Anschrift (Straße, PLZ, Ort)', 'kaeuferAnschrift', { wide: true })}
-            {renderField('Telefon / E-Mail', 'kaeuferKontakt', { wide: true })}
+            {renderField('Telefon', 'kaeuferKontakt')}
+            {renderField(isLieferung ? 'E-Mail des Käufers *' : 'E-Mail des Käufers', 'kaeuferEmail', {
+              placeholder: isLieferung ? 'für die Widerrufserklärung' : '',
+            })}
             {renderField('Kaufpreis (€)', 'verkaufspreis', { placeholder: 'leer = Ziel-VK / VK' })}
             {renderField('Zahlweise', 'zahlweise', { placeholder: 'bar / Überweisung' })}
-            {renderField('Übergabeort', 'ort', { placeholder: 'z.B. Braunschweig' })}
-            {renderField('Übergabedatum', 'datum', { type: 'date' })}
+            {renderField('Ort des Vertragsschlusses', 'ort', {
+              placeholder: isLieferung ? 'Lieferadresse / Ort eintragen' : 'z.B. Braunschweig',
+              wide: true,
+            })}
+            {isLieferung && renderField('Lieferadresse (Straße, PLZ, Ort) *', 'lieferadresse', { wide: true })}
+            {isLieferung && renderField('Datum des Vertragsschlusses *', 'vertragsschlussDatum', { type: 'date' })}
+            {renderField(
+              isLieferung ? 'Übergabe / Warenerhalt * (Fristbeginn)' : 'Übergabedatum',
+              'datum',
+              { type: 'date' },
+            )}
+            {isLieferung && renderField('Geschätzte Rücksendekosten', 'ruecksendekosten', {
+              placeholder: DEFAULT_RUECKSENDEKOSTEN,
+              wide: true,
+            })}
           </div>
         </div>
       )}
