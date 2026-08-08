@@ -10,7 +10,7 @@ export const SELLER = {
   address: 'Helene-Engelbrecht-Straße 21, 38124 Braunschweig',
   phone: '0162 7055104',
   // Pflichtangabe für die Widerrufsbelehrung (Empfänger der Widerrufserklärung).
-  email: 'lennarternst08@gmail.com',
+  email: 'lennart.fahrrad@gmail.com',
   taxNote: 'Kleinunternehmer gemäß § 19 UStG',
 };
 
