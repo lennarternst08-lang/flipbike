@@ -9,6 +9,7 @@ import { increment, doc, updateDoc, setDoc, deleteDoc } from 'firebase/firestore
 import { db, auth } from '../firebase';
 import { ReceiptUploader } from './ReceiptUploader';
 import { BikeDetailsFields } from './BikeDetailsFields';
+import { WageScenarios } from './WageScenarios';
 import { sanitizeDetails, openKaufvertragPrint, detailsCompleteness } from '../lib/kaufvertrag';
 import { PUTZEN_COST, PUTZEN_LABEL, hasPutzen, togglePutzen } from '../lib/expenses';
 
@@ -1613,6 +1614,21 @@ export function WorkshopModule({ bikes, inventoryItems, groupOrders = [], receip
               </span>
             </div>
           </div>
+
+          {/* Stundenlohn-Szenarien: nach VK, nach Zeit, Zielrechner */}
+          {activeBike.status !== 'Infrastruktur' && activeBike.status !== 'Material' && (
+            <WageScenarios
+              bikeId={activeBike.id}
+              purchasePrice={activeBike.purchasePrice}
+              totalExpenses={totalExpenses}
+              currentSeconds={time}
+              targetPrice={activeBike.targetSellingPrice || activeBike.sellingPrice}
+              onApplyTargetPrice={(price) => {
+                updateBike(activeBike.id, { targetSellingPrice: price });
+                addLog(`Ziel-VK für "${activeBike.name}" auf ${formatCurrency(price)} gesetzt (Zielrechner)`, 'workshop');
+              }}
+            />
+          )}
         </div>
       </div>
     </div>
