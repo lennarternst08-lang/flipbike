@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { formatTime, formatCurrency } from '../lib/utils';
-import { Play, Pause, RotateCcw, Plus, Camera, CheckSquare, Wrench, Trash2, CheckCircle2, Circle, Undo2, Search, Eye, X, Clock, Package, Minus, Folders, Folder, FileText, Check, Sparkles } from 'lucide-react';
+import { Play, Pause, RotateCcw, Plus, Camera, CheckSquare, Wrench, Trash2, CheckCircle2, Circle, Undo2, Search, Eye, X, Clock, Package, Minus, Folders, Folder, FileText, Check, Sparkles, Droplet } from 'lucide-react';
 import { increment, doc, updateDoc, setDoc, deleteDoc } from 'firebase/firestore';
 import { db, auth } from '../firebase';
 import { ReceiptUploader } from './ReceiptUploader';
@@ -22,12 +22,13 @@ interface WorkshopModuleProps {
   activeBikeId: string | null;
   setActiveBikeId: (id: string | null) => void;
   addLog: (message: string, module: 'tracking' | 'workshop' | 'stopwatch' | 'system', revertAction?: any) => void;
+  addInventoryItem?: (item: Partial<InventoryItem>, module?: 'tracking' | 'workshop') => void;
   deleteInventoryItem: (id: string) => void;
   addGroupOrder?: (order: Omit<GroupOrder, 'id' | 'userId'>, items: Partial<InventoryItem>[]) => void;
   deleteGroupOrder?: (orderId: string) => void;
 }
 
-export function WorkshopModule({ bikes, inventoryItems, groupOrders = [], receipts = [], updateBike, syncBikeTime, activeBikeId, setActiveBikeId, addLog, deleteInventoryItem, addGroupOrder, deleteGroupOrder }: WorkshopModuleProps) {
+export function WorkshopModule({ bikes, inventoryItems, groupOrders = [], receipts = [], updateBike, syncBikeTime, activeBikeId, setActiveBikeId, addLog, addInventoryItem, deleteInventoryItem, addGroupOrder, deleteGroupOrder }: WorkshopModuleProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [showInventory, setShowInventory] = useState(false);
 
@@ -484,13 +485,14 @@ export function WorkshopModule({ bikes, inventoryItems, groupOrders = [], receip
   
   const [expandedOrders, setExpandedOrders] = useState<Record<string, boolean>>({});
 
-  // Materialkosten Search & Filter States
+  // Materialkosten Search State
+  // Nur Ersatzteile werden im Lager geführt und können an einem Rad verbaut werden –
+  // Verbrauchsmaterial wird direkt als Kosten erfasst und taucht hier nicht auf.
   const [materialSearch, setMaterialSearch] = useState('');
-  const [materialCategory, setMaterialCategory] = useState<'all' | 'part' | 'consumable'>('all');
 
   const filteredMaterials = inventoryItems.filter(i => {
     if (i.quantity <= 0) return false;
-    if (materialCategory !== 'all' && i.category !== materialCategory) return false;
+    if (i.category !== 'part') return false;
     if (materialSearch && !i.name.toLowerCase().includes(materialSearch.toLowerCase())) return false;
     return true;
   });
@@ -507,24 +509,15 @@ export function WorkshopModule({ bikes, inventoryItems, groupOrders = [], receip
   };
 
   const handleAddItemSubmit = () => {
-    if (!newItemData.name || !auth.currentUser) return;
-    const newItem: InventoryItem = {
-      id: Math.random().toString(36).substr(2, 9),
+    if (!newItemData.name || !addInventoryItem) return;
+    addInventoryItem({
       name: newItemData.name,
       category: newItemData.category as 'part' | 'consumable' | 'machinery',
       pricePerUnit: newItemData.pricePerUnit || 0,
       quantity: newItemData.quantity || 0,
-      initialQuantity: newItemData.quantity || 0,
-      sourceId: 'manual', // or derived from something else
-      purchaseDate: newItemData.purchaseDate || new Date().toISOString().split('T')[0],
-      userId: auth.currentUser.uid
-    };
+      purchaseDate: newItemData.purchaseDate || new Date().toISOString().split('T')[0]
+    }, 'workshop');
 
-    setDoc(doc(db, 'inventoryItems', newItem.id), newItem).catch((e) => {
-      console.error("Failed to add inventory item to DB:", e);
-    });
-
-    addLog(`Material hinzugefügt: "${newItem.name}"`, 'workshop');
     setIsAddItemModalOpen(false);
     setNewItemData({
       name: '',
@@ -640,10 +633,11 @@ export function WorkshopModule({ bikes, inventoryItems, groupOrders = [], receip
                     </CardContent>
                 </Card>
 
-                {/* Verbrauchsmaterial */}
+                {/* Verbrauchsmaterial: reine Kostenerfassung, nicht im Lager zum Verbauen */}
                 <Card>
                     <CardHeader className="pb-3 border-b border-slate-800">
                       <CardTitle className="text-base text-slate-300">Verbrauchsmaterial (Bremsenreiniger etc.)</CardTitle>
+                      <p className="text-xs text-slate-500 mt-1">Nur Kostenübersicht — wird nicht im Lager zum Verbauen angeboten.</p>
                     </CardHeader>
                     <CardContent className="p-0">
                         {consumables.length === 0 ? (
@@ -725,27 +719,46 @@ export function WorkshopModule({ bikes, inventoryItems, groupOrders = [], receip
                           autoFocus
                         />
                       </div>
-                      <div className="grid grid-cols-2 gap-4">
-                        <div>
-                            <label className="block text-sm font-medium text-slate-400 mb-1">Kategorie</label>
-                            <select 
-                                className="w-full bg-slate-800 border-slate-700 text-slate-200 text-sm rounded-md focus:ring-orange-500 focus:border-orange-500 block p-2 h-[42px]"
-                                value={newItemData.category || 'part'}
-                                onChange={(e) => setNewItemData({...newItemData, category: e.target.value as any})}
-                            >
-                                <option value="part">Einbauteil</option>
-                                <option value="consumable">Verbrauchsmaterial</option>
-                            </select>
+                      <div>
+                        <label className="block text-sm font-medium text-slate-400 mb-1">Kategorie</label>
+                        <div className="flex bg-slate-800 p-1 rounded-lg border border-slate-700">
+                          <button
+                            type="button"
+                            onClick={() => setNewItemData({...newItemData, category: 'part'})}
+                            className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
+                              (newItemData.category || 'part') === 'part'
+                                ? 'bg-emerald-600 text-white shadow'
+                                : 'text-slate-400 hover:text-slate-300'
+                            }`}
+                          >
+                            <Wrench className="w-3.5 h-3.5" /> Ersatzteil
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setNewItemData({...newItemData, category: 'consumable'})}
+                            className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
+                              newItemData.category === 'consumable'
+                                ? 'bg-blue-600 text-white shadow'
+                                : 'text-slate-400 hover:text-slate-300'
+                            }`}
+                          >
+                            <Droplet className="w-3.5 h-3.5" /> Verbrauchsmaterial
+                          </button>
                         </div>
-                        <div>
-                            <label className="block text-sm font-medium text-slate-400 mb-1">Stückzahl</label>
-                            <Input 
-                                type="number"
-                                value={newItemData.quantity !== undefined ? newItemData.quantity : 1}
-                                onChange={(e) => setNewItemData({...newItemData, quantity: parseInt(e.target.value) || 0})}
-                                className="bg-slate-800 border-slate-700 text-slate-100"
-                            />
-                        </div>
+                        <p className="text-xs text-slate-500 mt-1">
+                          {(newItemData.category || 'part') === 'part'
+                            ? 'Ersatzteile landen im Lager und können hier an einem Rad verbaut werden.'
+                            : 'Verbrauchsmaterial wird als Kosten erfasst, taucht aber nicht im Lager auf.'}
+                        </p>
+                      </div>
+                      <div>
+                          <label className="block text-sm font-medium text-slate-400 mb-1">Stückzahl</label>
+                          <Input
+                              type="number"
+                              value={newItemData.quantity !== undefined ? newItemData.quantity : 1}
+                              onChange={(e) => setNewItemData({...newItemData, quantity: parseInt(e.target.value) || 0})}
+                              className="bg-slate-800 border-slate-700 text-slate-100"
+                          />
                       </div>
                       <div className="grid grid-cols-2 gap-4">
                           <div>
@@ -1364,20 +1377,11 @@ export function WorkshopModule({ bikes, inventoryItems, groupOrders = [], receip
                    
                    <div className="flex space-x-2 mb-2">
                      <Input
-                       placeholder="Suchen..."
+                       placeholder="Ersatzteil suchen..."
                        value={materialSearch}
                        onChange={(e) => setMaterialSearch(e.target.value)}
                        className="flex-1 text-xs h-8"
                      />
-                     <select
-                       className="bg-slate-900 border border-slate-700 text-slate-300 text-xs rounded-md focus:ring-orange-500 focus:border-orange-500 p-1 h-8"
-                       value={materialCategory}
-                       onChange={(e) => setMaterialCategory(e.target.value as any)}
-                     >
-                       <option value="all">Alle</option>
-                       <option value="part">Einbauteile</option>
-                       <option value="consumable">Verbrauchsteile</option>
-                     </select>
                    </div>
 
                    {filteredMaterials.length === 0 ? (
@@ -1409,7 +1413,7 @@ export function WorkshopModule({ bikes, inventoryItems, groupOrders = [], receip
                             }}>
                                 <span className="truncate text-slate-300">
                                   <span className="text-[10px] text-slate-500 mr-2 uppercase tracking-wider">
-                                    {item.category === 'part' ? 'Einbau' : 'Verbrauch'}
+                                    Einbau
                                   </span>
                                   {item.name}
                                 </span>

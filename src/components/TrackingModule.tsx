@@ -17,7 +17,7 @@ import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { formatCurrency, formatTime } from '../lib/utils';
-import { TrendingUp, Clock, Wallet, Plus, Search, Filter, ArrowUpDown, ArrowUp, ArrowDown, MoreVertical, Trash2, Edit2, Star, ChevronDown, ChevronUp, X, Check, FileCheck, Eye, EyeOff, Play, Pause, RotateCcw, Megaphone, Monitor, FileText } from 'lucide-react';
+import { TrendingUp, Clock, Wallet, Plus, Search, Filter, ArrowUpDown, ArrowUp, ArrowDown, MoreVertical, Trash2, Edit2, Star, ChevronDown, ChevronUp, X, Check, FileCheck, Eye, EyeOff, Play, Pause, RotateCcw, Megaphone, Monitor, FileText, Wrench, Droplet } from 'lucide-react';
 import { ReceiptUploader } from './ReceiptUploader';
 import { BikeDetailsFields } from './BikeDetailsFields';
 import { emptyBikeDetails, openKaufvertragPrint } from '../lib/kaufvertrag';
@@ -83,6 +83,7 @@ interface TrackingModuleProps {
   updateBike: (id: string, updates: Partial<Bike>) => void;
   addBike: (bike: Partial<Bike>) => void;
   deleteBike: (id: string) => void;
+  addInventoryItem?: (item: Partial<InventoryItem>, module?: 'tracking' | 'workshop') => void;
   deleteInventoryItem: (id: string) => void;
   deleteGroupOrder?: (id: string) => void;
   onNavigateToWorkshop: (id: string) => void;
@@ -99,7 +100,8 @@ export function TrackingModule({
   receipts = [],
   updateBike, 
   addBike, 
-  deleteBike, 
+  deleteBike,
+  addInventoryItem,
   deleteInventoryItem,
   deleteGroupOrder,
   onNavigateToWorkshop, 
@@ -176,6 +178,11 @@ export function TrackingModule({
     status: 'Zu reparieren',
     acquisitionSource: 'flyer'
   });
+
+  // Zusatzfelder, wenn im Hinzufügen-Dialog Status "Material" gewählt ist:
+  // Material landet nicht als Bike, sondern als Posten im Materialinventar.
+  const [newMaterialQuantity, setNewMaterialQuantity] = useState(1);
+  const [newMaterialCategory, setNewMaterialCategory] = useState<'part' | 'consumable'>('part');
 
   const [isReady, setIsReady] = useState(!initialScrollPos);
   const [, setTick] = useState(0);
@@ -409,6 +416,34 @@ export function TrackingModule({
 
   const handleAddBikeSubmit = () => {
     if (!newBikeData.name) return;
+
+    // "Material" wird als Inventar-Posten gespeichert (Materialinventar),
+    // damit es in der Werkstatt an einem Rad verbaut werden kann.
+    if (newBikeData.status === 'Material') {
+      if (!addInventoryItem) return;
+      addInventoryItem({
+        name: newBikeData.name,
+        category: newMaterialCategory,
+        pricePerUnit: newBikeData.purchasePrice || 0,
+        quantity: newMaterialQuantity > 0 ? newMaterialQuantity : 1,
+        purchaseDate: newBikeData.purchaseDate || new Date().toISOString().split('T')[0]
+      }, 'tracking');
+      setIsAddModalOpen(false);
+      setShowAddDetails(false);
+      setNewMaterialQuantity(1);
+      setNewMaterialCategory('part');
+      setNewBikeData({
+        name: '',
+        purchaseDate: new Date().toISOString().split('T')[0],
+        purchasePrice: 0,
+        targetSellingPrice: 0,
+        status: 'Zu reparieren',
+        acquisitionSource: 'flyer',
+        details: emptyBikeDetails()
+      });
+      return;
+    }
+
     addBike(newBikeData);
     setIsAddModalOpen(false);
     setShowAddDetails(false);
@@ -1028,6 +1063,65 @@ export function TrackingModule({
        flyer: flyerAreas.filter(a => (Number(a.costEuro) || 0) > 0 && (a.distributedDate || '').startsWith(selectedMonthAggregate))
       }
     : null;
+
+  // Alt-Bestände: früher wurde "Material" als Bike mit status 'Material' erfasst.
+  // Diese gehören in die Material-Sektion, nicht zu Infrastruktur.
+  const activeInfraBikes = activeMaterialMonth?.bikes.filter(b => b.status !== 'Material') || [];
+  const activeMaterialBikes = activeMaterialMonth?.bikes.filter(b => b.status === 'Material') || [];
+
+  const renderPurchaseBikeRow = (bike: Bike) => {
+    const hasReceipt = receipts?.find(r => r.referenceId === bike.id);
+    const isMaterial = bike.status === 'Material';
+    const isExtracted = bikes.some(b => b.linkedFromId === bike.id);
+    return (
+        <div key={bike.id} className="flex flex-col sm:flex-row sm:justify-between items-start sm:items-center gap-3 sm:gap-0 bg-slate-800/50 p-3 rounded-lg border border-slate-700/50">
+           <div className="flex flex-col w-full sm:w-auto">
+              <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2">
+                 <span className={`font-medium break-words leading-tight ${hasReceipt ? 'text-emerald-400' : 'text-slate-200'}`}>{bike.name}</span>
+                 {isExtracted && (
+                     <span className="bg-blue-500/20 text-blue-400 text-[10px] px-1.5 py-0.5 rounded border border-blue-500/30 whitespace-nowrap">Als Projekt erfasst</span>
+                 )}
+                 <div className="shrink-0">
+                     <ReceiptUploader
+                         bikeId={bike.id}
+                         referenceId={bike.id}
+                         referenceType={isMaterial ? 'material' : 'infrastructure'}
+                         existingReceipt={hasReceipt}
+                     />
+                 </div>
+              </div>
+              <span className="text-xs text-slate-500 mt-1">{isMaterial ? 'Kategorie: Material' : 'Kategorie: Infrastruktur'} | {bike.purchaseDate}</span>
+           </div>
+           <div className="flex items-center justify-between w-full sm:w-auto mt-2 sm:mt-0 pt-2 sm:pt-0 border-t sm:border-t-0 border-slate-700/50">
+              <span className="font-bold text-slate-200">{formatCurrency(bike.purchasePrice)}</span>
+              <div className="flex items-center space-x-2">
+                  {!isExtracted && (
+                      <button
+                         onClick={(e) => {
+                             e.stopPropagation();
+                             extractToStandaloneProject(bike);
+                         }}
+                         className="text-slate-400 hover:text-blue-400 transition-colors pointer-events-auto sm:ml-4"
+                         title="Als Projekt extrahieren (für Zeiterfassung)"
+                      >
+                         <FileCheck className="w-4 h-4" />
+                      </button>
+                  )}
+                  <button
+                     onClick={(e) => {
+                         e.stopPropagation();
+                         deleteBike(bike.id);
+                     }}
+                     className="text-slate-400 hover:text-red-400 transition-colors pointer-events-auto sm:ml-2"
+                     title="Löschen"
+                  >
+                     <Trash2 className="w-4 h-4" />
+                  </button>
+              </div>
+           </div>
+        </div>
+    );
+  };
 
   // Filter and sort bikes for inventory
   const handleSort = (field: SortField) => {
@@ -2113,71 +2207,26 @@ export function TrackingModule({
             <div className="p-4 overflow-y-auto space-y-6">
                <div>
                   <h3 className="text-sm font-semibold uppercase text-slate-500 tracking-wider mb-3">Infrastruktur & Werkzeuge (Bikes)</h3>
-                  {activeMaterialMonth.bikes.length === 0 ? (
+                  {activeInfraBikes.length === 0 ? (
                      <p className="text-sm text-slate-500">Keine Infrastruktur-Käufe in diesem Monat.</p>
                   ) : (
                      <div className="space-y-2">
-                        {activeMaterialMonth.bikes.map(bike => {
-                           const hasReceipt = receipts?.find(r => r.referenceId === bike.id);
-                           const isMaterial = bike.status === 'Material';
-                           const isExtracted = bikes.some(b => b.linkedFromId === bike.id);
-                           return (
-                               <div key={bike.id} className="flex flex-col sm:flex-row sm:justify-between items-start sm:items-center gap-3 sm:gap-0 bg-slate-800/50 p-3 rounded-lg border border-slate-700/50">
-                                  <div className="flex flex-col w-full sm:w-auto">
-                                     <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2">
-                                        <span className={`font-medium break-words leading-tight ${hasReceipt ? 'text-emerald-400' : 'text-slate-200'}`}>{bike.name}</span>
-                                        {isExtracted && (
-                                            <span className="bg-blue-500/20 text-blue-400 text-[10px] px-1.5 py-0.5 rounded border border-blue-500/30 whitespace-nowrap">Als Projekt erfasst</span>
-                                        )}
-                                        <div className="shrink-0">
-                                            <ReceiptUploader 
-                                                bikeId={bike.id}
-                                                referenceId={bike.id}
-                                                referenceType={isMaterial ? 'material' : 'infrastructure'}
-                                                existingReceipt={hasReceipt}
-                                            />
-                                        </div>
-                                     </div>
-                                     <span className="text-xs text-slate-500 mt-1">{isMaterial ? 'Kategorie: Material' : 'Kategorie: Infrastruktur'} | {bike.purchaseDate}</span>
-                                  </div>
-                                  <div className="flex items-center justify-between w-full sm:w-auto mt-2 sm:mt-0 pt-2 sm:pt-0 border-t sm:border-t-0 border-slate-700/50">
-                                     <span className="font-bold text-slate-200">{formatCurrency(bike.purchasePrice)}</span>
-                                     <div className="flex items-center space-x-2">
-                                         {!isExtracted && (
-                                             <button 
-                                                onClick={(e) => {
-                                                    e.stopPropagation();
-                                                    extractToStandaloneProject(bike);
-                                                }}
-                                                className="text-slate-400 hover:text-blue-400 transition-colors pointer-events-auto sm:ml-4"
-                                                title="Als Projekt extrahieren (für Zeiterfassung)"
-                                             >
-                                                <FileCheck className="w-4 h-4" />
-                                             </button>
-                                         )}
-                                         <button 
-                                            onClick={(e) => {
-                                                e.stopPropagation();
-                                                deleteBike(bike.id);
-                                            }}
-                                            className="text-slate-400 hover:text-red-400 transition-colors pointer-events-auto sm:ml-2"
-                                            title="Löschen"
-                                         >
-                                            <Trash2 className="w-4 h-4" />
-                                         </button>
-                                     </div>
-                                  </div>
-                               </div>
-                           );
-                        })}
+                        {activeInfraBikes.map(renderPurchaseBikeRow)}
                      </div>
                   )}
                </div>
 
                <div>
                   <h3 className="text-sm font-semibold uppercase text-slate-500 tracking-wider mb-3">Materialinventar & Verbrauchsteile</h3>
+                  {activeMaterialBikes.length > 0 && (
+                     <div className="space-y-2 mb-2">
+                        {activeMaterialBikes.map(renderPurchaseBikeRow)}
+                     </div>
+                  )}
                   {activeMaterialMonth.inventory.length === 0 ? (
-                     <p className="text-sm text-slate-500">Keine Einzel-Käufe in diesem Monat.</p>
+                     activeMaterialBikes.length === 0 && (
+                       <p className="text-sm text-slate-500">Keine Einzel-Käufe in diesem Monat.</p>
+                     )
                   ) : (
                      <div className="space-y-2">
                         {activeMaterialMonth.inventory.map(item => {
@@ -2496,24 +2545,73 @@ export function TrackingModule({
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <label className="text-sm font-medium text-slate-400">Einkaufspreis (€)</label>
-                  <Input 
+                  <label className="text-sm font-medium text-slate-400">
+                    {newBikeData.status === 'Material' ? 'Preis pro Stück (€)' : 'Einkaufspreis (€)'}
+                  </label>
+                  <Input
                     type="number"
                     value={newBikeData.purchasePrice || ''}
                     onChange={(e) => setNewBikeData({...newBikeData, purchasePrice: parseFloat(e.target.value) || 0})}
                     className="bg-slate-800 border-slate-700"
                   />
                 </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-slate-400">Ziel VK (€)</label>
-                  <Input 
-                    type="number"
-                    value={newBikeData.targetSellingPrice || ''}
-                    onChange={(e) => setNewBikeData({...newBikeData, targetSellingPrice: parseFloat(e.target.value) || 0})}
-                    className="bg-slate-800 border-slate-700"
-                  />
-                </div>
+                {newBikeData.status === 'Material' ? (
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-slate-400">Menge</label>
+                    <Input
+                      type="number"
+                      min={1}
+                      value={newMaterialQuantity}
+                      onChange={(e) => setNewMaterialQuantity(parseInt(e.target.value) || 0)}
+                      className="bg-slate-800 border-slate-700"
+                    />
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-slate-400">Ziel VK (€)</label>
+                    <Input
+                      type="number"
+                      value={newBikeData.targetSellingPrice || ''}
+                      onChange={(e) => setNewBikeData({...newBikeData, targetSellingPrice: parseFloat(e.target.value) || 0})}
+                      className="bg-slate-800 border-slate-700"
+                    />
+                  </div>
+                )}
               </div>
+              {newBikeData.status === 'Material' && (
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-slate-400">Material-Kategorie</label>
+                  <div className="flex bg-slate-800 p-1 rounded-lg border border-slate-700">
+                    <button
+                      type="button"
+                      onClick={() => setNewMaterialCategory('part')}
+                      className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
+                        newMaterialCategory === 'part'
+                          ? 'bg-emerald-600 text-white shadow'
+                          : 'text-slate-400 hover:text-slate-300'
+                      }`}
+                    >
+                      <Wrench className="w-3.5 h-3.5" /> Ersatzteil
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setNewMaterialCategory('consumable')}
+                      className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
+                        newMaterialCategory === 'consumable'
+                          ? 'bg-blue-600 text-white shadow'
+                          : 'text-slate-400 hover:text-slate-300'
+                      }`}
+                    >
+                      <Droplet className="w-3.5 h-3.5" /> Verbrauchsmaterial
+                    </button>
+                  </div>
+                  <p className="text-xs text-slate-500">
+                    {newMaterialCategory === 'part'
+                      ? 'Ersatzteile landen im Lager der Werkstatt und können dort an einem Rad verbaut werden.'
+                      : 'Verbrauchsmaterial wird als Kosten erfasst, taucht aber nicht im Werkstatt-Lager auf.'}
+                  </p>
+                </div>
+              )}
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <label className="text-sm font-medium text-slate-400">Status</label>

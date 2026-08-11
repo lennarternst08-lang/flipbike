@@ -1137,6 +1137,33 @@ function App() {
     }
   }, [addLog, bikes, activeWorkshopBikeId]);
 
+  // Material im Materialinventar anlegen (lokal + Firestore, analog zu addBike)
+  const addInventoryItem = useCallback((data: Partial<InventoryItem>, module: 'tracking' | 'workshop' = 'workshop') => {
+    const quantity = data.quantity && data.quantity > 0 ? data.quantity : 1;
+    const newItem: InventoryItem = {
+      id: Math.random().toString(36).substr(2, 9),
+      name: data.name || 'Material',
+      category: (data.category as 'part' | 'consumable' | 'machinery') || 'part',
+      pricePerUnit: data.pricePerUnit || 0,
+      quantity,
+      initialQuantity: quantity,
+      sourceId: data.sourceId || 'manual',
+      purchaseDate: data.purchaseDate || new Date().toISOString().split('T')[0],
+      userId: auth.currentUser?.uid || 'local'
+    };
+
+    setInventoryItems(prev => [newItem, ...prev]);
+
+    if (auth.currentUser) {
+      setDoc(doc(db, 'inventoryItems', newItem.id), newItem).catch(e => {
+        handleFirestoreError(e, OperationType.CREATE, 'inventoryItems');
+      });
+    }
+
+    addLog(`Material hinzugefügt: "${newItem.name}" (${quantity}x)`, module);
+    return newItem;
+  }, [addLog]);
+
   const deleteInventoryItem = useCallback((id: string) => {
     const item = inventoryItems.find(i => i.id === id);
     if (item) {
@@ -1918,7 +1945,8 @@ function App() {
               receipts={receipts}
               updateBike={updateBike} 
               addBike={addBike} 
-              deleteBike={deleteBike} 
+              deleteBike={deleteBike}
+              addInventoryItem={addInventoryItem}
               deleteInventoryItem={deleteInventoryItem}
               deleteGroupOrder={deleteGroupOrder}
               onNavigateToWorkshop={(id) => {
@@ -1938,6 +1966,7 @@ function App() {
               receipts={receipts}
               updateBike={updateBike} 
               syncBikeTime={syncBikeTime}
+              addInventoryItem={addInventoryItem}
               deleteInventoryItem={deleteInventoryItem}
               addGroupOrder={addGroupOrder}
               deleteGroupOrder={deleteGroupOrder}
