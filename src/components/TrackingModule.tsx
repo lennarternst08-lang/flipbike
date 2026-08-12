@@ -1249,6 +1249,20 @@ export function TrackingModule({
 
       if (valA < valB) return sortDirection === 'asc' ? -1 : 1;
       if (valA > valB) return sortDirection === 'asc' ? 1 : -1;
+
+      // Feinsortierung innerhalb der Status-Gruppe "Verkauft": zuletzt verkauft zuerst.
+      // Verkaufte ohne Verkaufsdatum rutschen ans Ende der Gruppe.
+      if (sortField === 'status' && a.status === 'Verkauft' && b.status === 'Verkauft') {
+        const saleTime = (d?: string) => {
+          const t = d ? new Date(d).getTime() : NaN;
+          return Number.isNaN(t) ? -Infinity : t;
+        };
+        const saleA = saleTime(a.saleDate);
+        const saleB = saleTime(b.saleDate);
+        if (saleA !== saleB) {
+          return sortDirection === 'asc' ? (saleA < saleB ? 1 : -1) : (saleA < saleB ? -1 : 1);
+        }
+      }
       return 0;
     });
 
