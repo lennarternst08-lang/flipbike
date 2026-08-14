@@ -586,10 +586,11 @@ export function TrackingModule({
       ? totalProfit / (totalAllTimeSeconds / 3600)
       : 0;
 
-    // Erweiterung #1: Ø Standzeit (gelistet -> verkauft) in Tagen über Räder mit beiden Daten
-    const standzeitBikes = bikeList.filter(b => b.listedAt && b.soldAt);
+    // Erweiterung #1: Ø Standzeit (Ankauf -> Verkauf) in Tagen – gleiche Basis wie die
+    // Spalte "Dauer" in der Tabelle.
+    const standzeitBikes = bikeList.filter(b => b.saleDate && b.purchaseDate);
     const avgStandzeit = standzeitBikes.length > 0
-      ? standzeitBikes.reduce((acc, b) => acc + differenceInDays(parseISO(b.soldAt as string), parseISO(b.listedAt as string)), 0) / standzeitBikes.length
+      ? standzeitBikes.reduce((acc, b) => acc + differenceInDays(parseISO(b.saleDate as string), parseISO(b.purchaseDate)), 0) / standzeitBikes.length
       : null;
 
     const activeBikesWithCapital = bikeList
@@ -800,8 +801,8 @@ export function TrackingModule({
           name: bike.name,
           price: bike.sellingPrice || 0,
           profit: (bike.sellingPrice || 0) - bike.purchasePrice - bikeExpenses,
-          standzeit: bike.listedAt && bike.soldAt
-            ? differenceInDays(parseISO(bike.soldAt), parseISO(bike.listedAt))
+          standzeit: bike.saleDate && bike.purchaseDate
+            ? differenceInDays(parseISO(bike.saleDate), parseISO(bike.purchaseDate))
             : null,
         });
         totalSellingPrice += (bike.sellingPrice || 0);
@@ -2139,7 +2140,7 @@ export function TrackingModule({
               <h3 className="text-2xl font-bold text-slate-100">{formatCurrency(totalUmsatz)}</h3>
               {renderHypoDelta(kpi.totalUmsatz, baseKpi.totalUmsatz)}
               <div className="mt-2 pt-2 border-t border-slate-700/50">
-                <p className="text-xs text-slate-400 font-medium leading-tight">Ø Standzeit (gelistet → verkauft)</p>
+                <p className="text-xs text-slate-400 font-medium leading-tight">Ø Standzeit (Ankauf → Verkauf)</p>
                 <h4 className="text-lg font-bold text-slate-300">
                   {avgStandzeit !== null ? `${avgStandzeit.toFixed(0)} Tage` : '—'}
                 </h4>
