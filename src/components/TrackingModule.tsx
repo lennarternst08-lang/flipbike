@@ -17,7 +17,7 @@ import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { formatCurrency, formatTime } from '../lib/utils';
-import { TrendingUp, Clock, Wallet, Plus, Search, Filter, ArrowUpDown, ArrowUp, ArrowDown, MoreVertical, Trash2, Edit2, Star, ChevronDown, ChevronUp, X, Check, FileCheck, Eye, EyeOff, Play, Pause, RotateCcw, Megaphone, Monitor, FileText, Wrench, Droplet } from 'lucide-react';
+import { TrendingUp, Clock, Wallet, Plus, Search, Filter, ArrowUpDown, ArrowUp, ArrowDown, MoreVertical, Trash2, Edit2, Star, ChevronDown, ChevronUp, X, Check, FileCheck, Eye, EyeOff, Play, Pause, RotateCcw, Megaphone, Monitor, FileText, Wrench, Droplet, Tag, PiggyBank, CalendarClock, Repeat } from 'lucide-react';
 import { ReceiptUploader } from './ReceiptUploader';
 import { BikeDetailsFields } from './BikeDetailsFields';
 import { emptyBikeDetails, openKaufvertragPrint } from '../lib/kaufvertrag';
@@ -40,22 +40,46 @@ const pointLabelsPlugin = {
     const { ctx, data } = chart;
     ctx.save();
     ctx.textAlign = 'center';
-    ctx.textBaseline = 'bottom';
     ctx.font = 'bold 10px Inter';
-    ctx.fillStyle = '#94a3b8';
 
     data.datasets.forEach((dataset: any, datasetIndex: number) => {
       const meta = chart.getDatasetMeta(datasetIndex);
+      // Liquidations-Overlays beschriften nur ihren Endpunkt und zeichnen unterhalb des
+      // Punktes, damit sie das Label der realen Linie am Abzweig nicht überlagern.
+      const isHypo = !!dataset._hypoLabelOnly;
+      const lastIndex = dataset.data.length - 1;
+      ctx.fillStyle = isHypo ? '#fb923c' : '#94a3b8';
+      ctx.textBaseline = isHypo ? 'top' : 'bottom';
       meta.data.forEach((element: any, index: number) => {
+        if (isHypo && index !== lastIndex) return;
         const value = dataset.data[index];
         if (value !== 0 && value !== null && value !== undefined) {
           const formattedValue = typeof value === 'number' ? Math.round(value).toString() : value;
-          ctx.fillText(formattedValue, element.x, element.y - 8);
+          ctx.fillText(formattedValue, element.x, element.y + (isHypo ? 8 : -8));
         }
       });
     });
     ctx.restore();
   }
+};
+
+// Liquidations-Orange (orange-500 / orange-400) – identisch zum Toggle & den Tabellenzeilen
+const HYPO_COLOR = '#f97316';
+const HYPO_COLOR_SOFT = 'rgba(249, 115, 22, 0.15)';
+
+/**
+ * Baut aus realer und hypothetischer Serie einen Ast, der nur die letzte Periode abzweigt:
+ * überall `null`, am vorletzten Punkt der *reale* Wert (Ansatzpunkt auf der echten Linie),
+ * am letzten Punkt der hypothetische. Der Liquidationsmodus bucht alle Simulations-Umsätze
+ * auf heute, deshalb unterscheidet sich ohnehin nur das letzte Bucket.
+ */
+const branchLastPeriod = (base: number[], hypo: number[]): (number | null)[] => {
+  const last = hypo.length - 1;
+  return hypo.map((value, i) => {
+    if (i === last) return value;
+    if (i === last - 1) return base[i];
+    return null;
+  });
 };
 
 ChartJS.register(
@@ -458,7 +482,20 @@ export function TrackingModule({
     });
   };
 
-  // Flyer-Gebiete (aus dem Flyer-Tracking, lokal gespiegelt)
+  // Flyer-Gebiete (aus dem Flyer-Tracking, lokal gespiegelt).
+  // Die Verteilzeit wird jetzt sichtbar ausgewiesen, deshalb reicht der zufällige
+  // Refresh über `bikes` nicht mehr – zusätzlich auf Fensterfokus & storage-Events neu lesen.
+  const [flyerRefreshTick, setFlyerRefreshTick] = useState(0);
+  React.useEffect(() => {
+    const bump = () => setFlyerRefreshTick(t => t + 1);
+    window.addEventListener('focus', bump);
+    window.addEventListener('storage', bump);
+    return () => {
+      window.removeEventListener('focus', bump);
+      window.removeEventListener('storage', bump);
+    };
+  }, []);
+
   const flyerAreas = React.useMemo<any[]>(() => {
     try {
       const areas = JSON.parse(localStorage.getItem('flyerTracking_areas') || '[]');
@@ -466,7 +503,7 @@ export function TrackingModule({
     } catch {
       return [];
     }
-  }, [bikes]); // bikes ändert sich häufig → hält den Wert beim Tab-Wechsel aktuell
+  }, [bikes, flyerRefreshTick]); // bikes ändert sich häufig → hält den Wert beim Tab-Wechsel aktuell
 
   // Flyer-Verteilzeit → zählt als Arbeitszeit
   const flyerDurationSeconds = React.useMemo(
@@ -492,84 +529,154 @@ export function TrackingModule({
     [flyerCostByMonth]
   );
 
-  // Calculate KPIs
-  const soldBikes = bikes.filter((b) => b.status === 'Verkauft');
+  // Aufzeichnungsbeginn = frühestes erfasstes Datum über alle Quellen.
+  // Immer aus rawBikes: der Liquidationsmodus verschiebt keine Ankaufsdaten.
+  const trackingStart = React.useMemo(() => {
+    const dates: string[] = [];
+    rawBikes.forEach(b => { if (b.purchaseDate) dates.push(b.purchaseDate); });
+    inventoryItems.forEach(i => { if (i.purchaseDate) dates.push(i.purchaseDate); });
+    groupOrders.forEach(o => { if (o.date) dates.push(o.date); });
+    if (dates.length === 0) return null;
+    return dates.reduce((min, d) => (d < min ? d : min));
+  }, [rawBikes, inventoryItems, groupOrders]);
 
-  const totalUmsatz = soldBikes.reduce((acc, bike) => acc + (bike.sellingPrice || 0), 0);
+  // Untergrenze 1 Monat, damit die Schnitte in den ersten Wochen nicht explodieren
+  const monthsSinceStart = trackingStart
+    ? Math.max(1, (differenceInDays(new Date(), parseISO(trackingStart)) + 1) / 30.437)
+    : 1;
 
-  // Gesamtgewinn = Cashflow (Alle Einnahmen - Alle Ausgaben)
-  const totalInventoryCostTracking = inventoryItems
-    .filter(item => !item.orderId)
-    .reduce((acc, item) => acc + (item.pricePerUnit * (item.initialQuantity || item.quantity)), 0);
-    
-  const totalGroupOrderCostTracking = groupOrders.reduce((acc, order) => acc + order.totalPrice, 0);
+  // Alle KPIs als reine Funktion der Räderliste – so lassen sie sich für die reale und
+  // die hypothetische Sicht doppelt auswerten und gegeneinander als Delta ausweisen.
+  const computeKpis = (bikeList: Bike[]) => {
+    const soldBikes = bikeList.filter((b) => b.status === 'Verkauft');
 
-  const totalProfit = bikes.reduce((acc, bike) => {
-    const expenses = bike.expenses.reduce((sum, exp) => sum + exp.amount, 0);
-    let bikeFlow = -bike.purchasePrice - expenses;
-    if (bike.status === 'Verkauft') {
-      bikeFlow += (bike.sellingPrice || 0);
-    }
-    return acc + bikeFlow;
-  }, 0) - totalInventoryCostTracking - totalGroupOrderCostTracking - flyerCostTotal;
+    const totalUmsatz = soldBikes.reduce((acc, bike) => acc + (bike.sellingPrice || 0), 0);
 
-  // Stundenlohn = Nur für verkaufte Fahrräder (Gewinn der verkauften / Zeit der verkauften)
-  const soldBikesProfit = soldBikes.reduce((acc, bike) => {
-    const expenses = bike.expenses.reduce((sum, exp) => sum + exp.amount, 0);
-    return acc + ((bike.sellingPrice || 0) - bike.purchasePrice - expenses);
-  }, 0);
+    // Gesamtgewinn = Cashflow (Alle Einnahmen - Alle Ausgaben)
+    const totalInventoryCostTracking = inventoryItems
+      .filter(item => !item.orderId)
+      .reduce((acc, item) => acc + (item.pricePerUnit * (item.initialQuantity || item.quantity)), 0);
 
-  const infrastructureTimeSeconds = bikes.filter(b => b.status === 'Infrastruktur').reduce((acc, bike) => acc + bike.timeSpentSeconds, 0);
-  const totalTimeSeconds = soldBikes.reduce((acc, bike) => acc + bike.timeSpentSeconds, 0) + infrastructureTimeSeconds;
-  const avgHourlyWage = totalTimeSeconds > 0
-    ? soldBikesProfit / (totalTimeSeconds / 3600)
-    : 0;
+    const totalGroupOrderCostTracking = groupOrders.reduce((acc, order) => acc + order.totalPrice, 0);
 
-
-  // Bug #1: Geschäfts-Stundenlohn = Nettogewinn / gesamte erfasste Zeit (alle Räder + operative Zeit + Flyer-Zeit, alle Kosten)
-  const totalAllTimeSeconds = bikes.reduce((acc, bike) => acc + bike.timeSpentSeconds, 0) + univTime + flyerDurationSeconds;
-  const businessHourlyWage = totalAllTimeSeconds > 0
-    ? totalProfit / (totalAllTimeSeconds / 3600)
-    : 0;
-
-  // Erweiterung #1: Ø Standzeit (gelistet -> verkauft) in Tagen über Räder mit beiden Daten
-  const standzeitBikes = bikes.filter(b => b.listedAt && b.soldAt);
-  const avgStandzeit = standzeitBikes.length > 0
-    ? standzeitBikes.reduce((acc, b) => acc + differenceInDays(parseISO(b.soldAt as string), parseISO(b.listedAt as string)), 0) / standzeitBikes.length
-    : null;
-
-  const activeBikesWithCapital = bikes
-    .filter(b => b.status !== 'Verkauft' && b.status !== 'Infrastruktur' && b.status !== 'Material')
-    .map(bike => {
+    const totalProfit = bikeList.reduce((acc, bike) => {
       const expenses = bike.expenses.reduce((sum, exp) => sum + exp.amount, 0);
-      return { ...bike, tiedCapital: bike.purchasePrice + expenses };
-    })
-    .sort((a, b) => b.tiedCapital - a.tiedCapital);
+      let bikeFlow = -bike.purchasePrice - expenses;
+      if (bike.status === 'Verkauft') {
+        bikeFlow += (bike.sellingPrice || 0);
+      }
+      return acc + bikeFlow;
+    }, 0) - totalInventoryCostTracking - totalGroupOrderCostTracking - flyerCostTotal;
 
-  const infrastructureWithCapital = bikes
-    .filter(b => b.status === 'Infrastruktur')
-    .map(bike => {
+    // Stundenlohn = Nur für verkaufte Fahrräder (Gewinn der verkauften / Zeit der verkauften)
+    const soldBikesProfit = soldBikes.reduce((acc, bike) => {
       const expenses = bike.expenses.reduce((sum, exp) => sum + exp.amount, 0);
-      return { ...bike, tiedCapital: bike.purchasePrice + expenses };
-    })
-    .sort((a, b) => b.tiedCapital - a.tiedCapital);
+      return acc + ((bike.sellingPrice || 0) - bike.purchasePrice - expenses);
+    }, 0);
 
-  const materialWithCapital = bikes
-    .filter(b => b.status === 'Material')
-    .map(bike => {
-      const expenses = bike.expenses.reduce((sum, exp) => sum + exp.amount, 0);
-      return { ...bike, tiedCapital: bike.purchasePrice + expenses };
-    })
-    .sort((a, b) => b.tiedCapital - a.tiedCapital);
+    const infrastructureTimeSeconds = bikeList.filter(b => b.status === 'Infrastruktur').reduce((acc, bike) => acc + bike.timeSpentSeconds, 0);
+    const totalTimeSeconds = soldBikes.reduce((acc, bike) => acc + bike.timeSpentSeconds, 0) + infrastructureTimeSeconds;
+    const avgHourlyWage = totalTimeSeconds > 0
+      ? soldBikesProfit / (totalTimeSeconds / 3600)
+      : 0;
 
-  const tiedCapital = activeBikesWithCapital.reduce((acc, bike) => acc + bike.tiedCapital, 0);
-  const infrastructureCapital = infrastructureWithCapital.reduce((acc, bike) => acc + bike.tiedCapital, 0);
-  const materialCapital = materialWithCapital.reduce((acc, bike) => acc + bike.tiedCapital, 0) + inventoryItems.reduce((acc, item) => acc + (item.pricePerUnit * item.quantity), 0);
-  const totalTiedCapital = tiedCapital + infrastructureCapital + materialCapital;
+    // Bug #1: Geschäfts-Stundenlohn = Nettogewinn / gesamte erfasste Zeit (alle Räder + operative Zeit + Flyer-Zeit, alle Kosten)
+    const totalAllTimeSeconds = bikeList.reduce((acc, bike) => acc + bike.timeSpentSeconds, 0) + univTime + flyerDurationSeconds;
+    const businessHourlyWage = totalAllTimeSeconds > 0
+      ? totalProfit / (totalAllTimeSeconds / 3600)
+      : 0;
 
-  // Erweiterung #2: Lagerwert (Restwert Ersatzteillager) = Σ(menge × preis/einheit)
-  const lagerwert = inventoryItems.reduce((acc, item) => acc + (item.quantity * item.pricePerUnit), 0);
-  const totalGebunden = tiedCapital + lagerwert;
+    // Erweiterung #1: Ø Standzeit (gelistet -> verkauft) in Tagen über Räder mit beiden Daten
+    const standzeitBikes = bikeList.filter(b => b.listedAt && b.soldAt);
+    const avgStandzeit = standzeitBikes.length > 0
+      ? standzeitBikes.reduce((acc, b) => acc + differenceInDays(parseISO(b.soldAt as string), parseISO(b.listedAt as string)), 0) / standzeitBikes.length
+      : null;
+
+    const activeBikesWithCapital = bikeList
+      .filter(b => b.status !== 'Verkauft' && b.status !== 'Infrastruktur' && b.status !== 'Material')
+      .map(bike => {
+        const expenses = bike.expenses.reduce((sum, exp) => sum + exp.amount, 0);
+        return { ...bike, tiedCapital: bike.purchasePrice + expenses };
+      })
+      .sort((a, b) => b.tiedCapital - a.tiedCapital);
+
+    const infrastructureWithCapital = bikeList
+      .filter(b => b.status === 'Infrastruktur')
+      .map(bike => {
+        const expenses = bike.expenses.reduce((sum, exp) => sum + exp.amount, 0);
+        return { ...bike, tiedCapital: bike.purchasePrice + expenses };
+      })
+      .sort((a, b) => b.tiedCapital - a.tiedCapital);
+
+    const materialWithCapital = bikeList
+      .filter(b => b.status === 'Material')
+      .map(bike => {
+        const expenses = bike.expenses.reduce((sum, exp) => sum + exp.amount, 0);
+        return { ...bike, tiedCapital: bike.purchasePrice + expenses };
+      })
+      .sort((a, b) => b.tiedCapital - a.tiedCapital);
+
+    const tiedCapital = activeBikesWithCapital.reduce((acc, bike) => acc + bike.tiedCapital, 0);
+    const infrastructureCapital = infrastructureWithCapital.reduce((acc, bike) => acc + bike.tiedCapital, 0);
+    const materialCapital = materialWithCapital.reduce((acc, bike) => acc + bike.tiedCapital, 0) + inventoryItems.reduce((acc, item) => acc + (item.pricePerUnit * item.quantity), 0);
+    const totalTiedCapital = tiedCapital + infrastructureCapital + materialCapital;
+
+    // Erweiterung #2: Lagerwert (Restwert Ersatzteillager) = Σ(menge × preis/einheit)
+    const lagerwert = inventoryItems.reduce((acc, item) => acc + (item.quantity * item.pricePerUnit), 0);
+    const totalGebunden = tiedCapital + lagerwert;
+
+    // Erweiterung #4: Pro-Rad- und Pro-Monat-Kennzahlen
+    const soldCount = soldBikes.length;
+    const avgSellingPrice = soldCount > 0 ? totalUmsatz / soldCount : 0;
+    const avgProfitPerBike = soldCount > 0 ? soldBikesProfit / soldCount : 0;
+    const avgMonthlyWage = totalProfit / monthsSinceStart;
+    const bikesPerMonth = soldCount / monthsSinceStart;
+
+    return {
+      totalUmsatz, totalProfit, soldBikesProfit,
+      avgHourlyWage, businessHourlyWage, avgStandzeit,
+      activeBikesWithCapital, infrastructureWithCapital, materialWithCapital,
+      tiedCapital, infrastructureCapital, materialCapital, totalTiedCapital,
+      lagerwert, totalGebunden,
+      soldCount, avgSellingPrice, avgProfitPerBike, avgMonthlyWage, bikesPerMonth,
+    };
+  };
+
+  const kpi = computeKpis(bikes);
+  // Referenzwerte ohne Simulation – bei ausgeschaltetem Modus identisch, dann kein 2. Durchlauf
+  const baseKpi = isHypotheticalMode ? computeKpis(rawBikes) : kpi;
+
+  const {
+    totalUmsatz, totalProfit, avgHourlyWage, businessHourlyWage, avgStandzeit,
+    activeBikesWithCapital, infrastructureWithCapital,
+    tiedCapital, totalTiedCapital, lagerwert, totalGebunden,
+  } = kpi;
+
+  /**
+   * Weist im Liquidationsmodus aus, um wie viel sich eine Kennzahl gegenüber der
+   * realen Zahl verschiebt. Bewusst eine Funktion statt einer Komponente, damit
+   * React den Knoten nicht bei jedem Render neu montiert.
+   */
+  const renderHypoDelta = (
+    current: number | null | undefined,
+    base: number | null | undefined,
+    unit: 'eur' | 'eurPerH' | 'days' | 'count' = 'eur',
+    variant: 'block' | 'inline' = 'block'
+  ) => {
+    if (!isHypotheticalMode || current == null || base == null) return null;
+    const delta = current - base;
+    if (!isFinite(delta) || Math.abs(delta) < 0.005) return null;
+    const abs = Math.abs(delta);
+    const body =
+      unit === 'eur' ? formatCurrency(abs)
+      : unit === 'eurPerH' ? `${formatCurrency(abs)}/h`
+      : unit === 'days' ? `${abs.toFixed(0)} Tage`
+      : abs.toFixed(1);
+    const text = `${delta > 0 ? '+' : '−'}${body}`;
+    return variant === 'inline'
+      ? <span className="ml-1.5 text-xs font-bold text-orange-400 whitespace-nowrap">{text}</span>
+      : <p className="text-xs font-bold text-orange-400 leading-tight mt-0.5">{text}</p>;
+  };
 
   // --- Chart Calculations ---
   const getPeriods = (tf: 'day' | 'week' | 'month' | 'year') => {
@@ -612,9 +719,12 @@ export function TrackingModule({
   const periods = getPeriods(timeframe); // Oldest to newest
   const labels = periods.map(p => formatPeriod(p, timeframe));
 
+  // Alle Zeitreihen als reine Funktion der Räderliste – reale Linie und Liquidations-Ast
+  // stammen aus demselben Code, nur mit unterschiedlicher Eingabe.
+  const computeSeries = (bikeList: Bike[]) => {
   const investData = periods.map(period => {
     let invest = 0;
-    bikes.forEach(bike => {
+    bikeList.forEach(bike => {
       if (bike.purchaseDate && isSamePeriod(parseISO(bike.purchaseDate), period, timeframe)) {
         invest += bike.purchasePrice;
       }
@@ -650,7 +760,7 @@ export function TrackingModule({
 
   const umsatzData = periods.map(period => {
     let umsatz = 0;
-    bikes.forEach(bike => {
+    bikeList.forEach(bike => {
       if (bike.saleDate && isSamePeriod(parseISO(bike.saleDate), period, timeframe)) {
         umsatz += (bike.sellingPrice || 0);
       }
@@ -662,37 +772,46 @@ export function TrackingModule({
 
   const periodDetails = periods.map(period => {
     const bought: { name: string, price: number }[] = [];
-    const sold: { name: string, price: number }[] = [];
-    const workSessions: { bikeName: string, duration: number }[] = [];
+    const sold: { name: string, price: number, profit: number, standzeit: number | null }[] = [];
+    const rawSessions: { bikeName: string, duration: number }[] = [];
     const materialExpenses: { bikeName: string, desc: string, amount: number }[] = [];
     let totalHours = 0;
     let totalExpenses = 0;
     let totalPurchasePrice = 0;
     let totalSellingPrice = 0;
-    
-    bikes.forEach(bike => {
+
+    bikeList.forEach(bike => {
       if (bike.purchaseDate && isSamePeriod(parseISO(bike.purchaseDate), period, timeframe)) {
         bought.push({ name: bike.name, price: bike.purchasePrice });
         totalPurchasePrice += bike.purchasePrice;
-        
+
         // Fallback for unlogged time (attribute to purchase date)
         const totalLoggedTime = (bike.workLogs || []).reduce((sum, l) => sum + l.durationSeconds, 0);
         const unloggedTime = Math.max(0, bike.timeSpentSeconds - totalLoggedTime);
         if (unloggedTime > 0) {
           totalHours += unloggedTime / 3600;
-          workSessions.push({ bikeName: `${bike.name} (Basis)`, duration: unloggedTime });
+          // Gleicher Schlüssel wie die Sessions → wird unten pro Rad zusammengefasst
+          rawSessions.push({ bikeName: bike.name, duration: unloggedTime });
         }
       }
       if (bike.saleDate && isSamePeriod(parseISO(bike.saleDate), period, timeframe)) {
-        sold.push({ name: bike.name, price: bike.sellingPrice || 0 });
+        const bikeExpenses = bike.expenses.reduce((sum, exp) => sum + exp.amount, 0);
+        sold.push({
+          name: bike.name,
+          price: bike.sellingPrice || 0,
+          profit: (bike.sellingPrice || 0) - bike.purchasePrice - bikeExpenses,
+          standzeit: bike.listedAt && bike.soldAt
+            ? differenceInDays(parseISO(bike.soldAt), parseISO(bike.listedAt))
+            : null,
+        });
         totalSellingPrice += (bike.sellingPrice || 0);
       }
-      
+
       // Work logs
       bike.workLogs?.forEach(log => {
         if (isSamePeriod(parseISO(log.timestamp), period, timeframe)) {
           totalHours += log.durationSeconds / 3600;
-          workSessions.push({ bikeName: bike.name, duration: log.durationSeconds });
+          rawSessions.push({ bikeName: bike.name, duration: log.durationSeconds });
         }
       });
 
@@ -727,27 +846,48 @@ export function TrackingModule({
         materialExpenses.push({ bikeName: 'Flyer', desc: a.name || 'Flyer-Verteilung', amount: cost });
       }
     });
-    
+
+    // Flyer-Verteilzeit zählt als Arbeitszeit und wird am Verteil-Datum einsortiert –
+    // analog zu den Flyer-Kosten darüber.
+    flyerAreas.forEach(a => {
+      const mins = Number(a.durationMinutes) || 0;
+      if (mins > 0 && a.distributedDate && isSamePeriod(parseISO(a.distributedDate), period, timeframe)) {
+        totalHours += mins / 60;
+        rawSessions.push({ bikeName: `Flyer: ${a.name || 'Verteilung'}`, duration: mins * 60 });
+      }
+    });
+
+    // Mehrere Sessions desselben Rades innerhalb dieser Periode zu einer Zeile bündeln.
+    // Bewusst nur periodenintern – Zeiten aus anderen Monaten bleiben in deren Bucket.
+    const workSessions = Object.entries(
+      rawSessions.reduce<Record<string, number>>((acc, ws) => {
+        acc[ws.bikeName] = (acc[ws.bikeName] || 0) + ws.duration;
+        return acc;
+      }, {})
+    )
+      .map(([bikeName, duration]) => ({ bikeName, duration }))
+      .sort((a, b) => b.duration - a.duration);
+
     const balance = totalSellingPrice - totalPurchasePrice - totalExpenses;
 
-    return { 
+    return {
       label: formatPeriod(period, timeframe),
-      bought, 
-      sold, 
-      totalHours, 
-      totalExpenses, 
+      bought,
+      sold,
+      totalHours,
+      totalExpenses,
       totalPurchasePrice,
       totalSellingPrice,
       balance,
-      workSessions, 
-      materialExpenses 
+      workSessions,
+      materialExpenses
     };
   });
 
   const gesamtGewinnData = periods.map(period => {
     const end = getEndOfPeriod(period, timeframe);
     let profit = 0;
-    bikes.forEach(bike => {
+    bikeList.forEach(bike => {
       if (bike.purchaseDate && parseISO(bike.purchaseDate) <= end) {
         profit -= bike.purchasePrice;
       }
@@ -786,8 +926,8 @@ export function TrackingModule({
   const stundenlohnData = periods.map(period => {
     let periodProfit = 0;
     let periodTime = 0;
-    
-    bikes.forEach(bike => {
+
+    bikeList.forEach(bike => {
       if (bike.status === 'Infrastruktur') {
          if (isSamePeriod(parseISO(bike.purchaseDate), period, timeframe)) {
             periodTime += bike.timeSpentSeconds;
@@ -797,15 +937,61 @@ export function TrackingModule({
         if (isSamePeriod(effectiveDate, period, timeframe)) {
           const expenses = bike.expenses.reduce((sum, exp) => sum + exp.amount, 0);
           const profit = (bike.sellingPrice || 0) - bike.purchasePrice - expenses;
-          
+
           periodProfit += profit;
           periodTime += bike.timeSpentSeconds;
         }
       }
     });
-    
+
     return periodTime > 0 ? periodProfit / (periodTime / 3600) : 0;
   });
+
+    return { investData, umsatzData, gewinnData, periodDetails, gesamtGewinnData, stundenlohnData };
+  };
+
+  const hypoSeries = computeSeries(bikes);
+  // Die dargestellten Linien zeigen immer die Realität; der Liquidationsmodus kommt
+  // ausschließlich als zusätzlicher orangener Ast dazu (siehe hypoDatasets unten).
+  const baseSeries = isHypotheticalMode ? computeSeries(rawBikes) : hypoSeries;
+  const { investData, umsatzData, gewinnData, periodDetails, gesamtGewinnData, stundenlohnData } = baseSeries;
+
+  // Tooltip-Fußzeilen sollen die Daten der Linie zeigen, über der man hovert.
+  const detailsFor = (context: any) => {
+    const index = context[0].dataIndex;
+    return context[0].dataset?._hypoLabelOnly
+      ? hypoSeries.periodDetails[index]
+      : baseSeries.periodDetails[index];
+  };
+
+  // Pro-Rad-Kennzahlen einer einzelnen Periode (fürs Monats-Detail-Modal)
+  const periodStats = (detail: typeof baseSeries.periodDetails[number], wage: number) => {
+    const count = detail.sold.length;
+    const standzeiten = detail.sold.map(s => s.standzeit).filter((v): v is number => v !== null);
+    return {
+      count,
+      avgSellingPrice: count > 0 ? detail.totalSellingPrice / count : 0,
+      avgProfit: count > 0 ? detail.sold.reduce((sum, s) => sum + s.profit, 0) / count : 0,
+      avgStandzeit: standzeiten.length > 0 ? standzeiten.reduce((a, v) => a + v, 0) / standzeiten.length : null,
+      wage,
+    };
+  };
+
+  // Dataset-Fabrik für den Liquidations-Ast; gibt [] zurück, wenn der Modus aus ist.
+  const hypoDataset = (label: string, base: number[], hypo: number[]) =>
+    isHypotheticalMode
+      ? [{
+          label,
+          data: branchLastPeriod(base, hypo),
+          borderColor: HYPO_COLOR,
+          backgroundColor: HYPO_COLOR_SOFT,
+          borderDash: [6, 4],
+          tension: 0.1,
+          fill: false,
+          spanGaps: false,
+          _hypoLabelOnly: true,
+        }]
+      : [];
 
   const commonOptions = {
     responsive: true,
@@ -863,14 +1049,17 @@ export function TrackingModule({
 
   const stundenlohnChartData = {
     labels,
-    datasets: [{
-      label: 'Stundenlohn (€/h)',
-      data: stundenlohnData,
-      borderColor: '#3b82f6',
-      backgroundColor: 'rgba(59, 130, 246, 0.1)',
-      tension: 0.1,
-      fill: false,
-    }]
+    datasets: [
+      {
+        label: 'Stundenlohn (€/h)',
+        data: stundenlohnData,
+        borderColor: '#3b82f6',
+        backgroundColor: 'rgba(59, 130, 246, 0.1)',
+        tension: 0.1,
+        fill: false,
+      },
+      ...hypoDataset('Liquidation (hypothetisch)', stundenlohnData, hypoSeries.stundenlohnData),
+    ]
   };
 
   const stundenlohnOptions = {
@@ -890,8 +1079,7 @@ export function TrackingModule({
             return label;
           },
           footer: (context: any) => {
-            const index = context[0].dataIndex;
-            const details = periodDetails[index];
+            const details = detailsFor(context);
             const lines = [];
             if (details.bought.length > 0) lines.push(`Gekauft: ${details.bought.map(b => b.name).join(', ')}`);
             if (details.sold.length > 0) lines.push(`Verkauft: ${details.sold.map(b => b.name).join(', ')}`);
@@ -912,8 +1100,7 @@ export function TrackingModule({
         callbacks: {
           ...commonOptions.plugins.tooltip.callbacks,
           footer: (context: any) => {
-            const index = context[0].dataIndex;
-            const details = periodDetails[index];
+            const details = detailsFor(context);
             const lines = [];
             if (details.bought.length > 0) lines.push(`Gekauft: ${details.bought.map(b => b.name).join(', ')}`);
             if (details.sold.length > 0) lines.push(`Verkauft: ${details.sold.map(b => b.name).join(', ')}`);
@@ -928,26 +1115,32 @@ export function TrackingModule({
 
   const gesamtGewinnChartData = {
     labels,
-    datasets: [{
-      label: 'Gesamtgewinn (€)',
-      data: gesamtGewinnData,
-      borderColor: '#3b82f6',
-      backgroundColor: 'rgba(59, 130, 246, 0.1)',
-      tension: 0.1,
-      fill: false,
-    }]
+    datasets: [
+      {
+        label: 'Gesamtgewinn (€)',
+        data: gesamtGewinnData,
+        borderColor: '#3b82f6',
+        backgroundColor: 'rgba(59, 130, 246, 0.1)',
+        tension: 0.1,
+        fill: false,
+      },
+      ...hypoDataset('Liquidation (hypothetisch)', gesamtGewinnData, hypoSeries.gesamtGewinnData),
+    ]
   };
 
   const gewinnPeriodeChartData = {
     labels,
-    datasets: [{
-      label: `Gewinn / ${timeframe === 'day' ? 'Tag' : timeframe === 'week' ? 'Woche' : timeframe === 'month' ? 'Monat' : 'Jahr'}`,
-      data: gewinnData,
-      borderColor: '#3b82f6',
-      backgroundColor: 'rgba(59, 130, 246, 0.1)',
-      tension: 0.1,
-      fill: false,
-    }]
+    datasets: [
+      {
+        label: `Gewinn / ${timeframe === 'day' ? 'Tag' : timeframe === 'week' ? 'Woche' : timeframe === 'month' ? 'Monat' : 'Jahr'}`,
+        data: gewinnData,
+        borderColor: '#3b82f6',
+        backgroundColor: 'rgba(59, 130, 246, 0.1)',
+        tension: 0.1,
+        fill: false,
+      },
+      ...hypoDataset('Liquidation (hypothetisch)', gewinnData, hypoSeries.gewinnData),
+    ]
   };
 
   const investUmsatzChartData = {
@@ -968,7 +1161,9 @@ export function TrackingModule({
         backgroundColor: 'rgba(16, 185, 129, 0.2)',
         tension: 0.1,
         fill: true,
-      }
+      },
+      // Nur der Umsatz verändert sich im Liquidationsmodus – der Invest bleibt real.
+      ...hypoDataset('Umsatz (Liquidation)', umsatzData, hypoSeries.umsatzData),
     ]
   };
 
@@ -1001,19 +1196,11 @@ export function TrackingModule({
             return label;
           },
           footer: (context: any) => {
-            const index = context[0].dataIndex;
-            const details = periodDetails[index];
-            const lines: string[] = [];
-            if (details.workSessions.length > 0) {
-              const bikeHours: Record<string, number> = {};
-              details.workSessions.forEach(ws => {
-                bikeHours[ws.bikeName] = (bikeHours[ws.bikeName] || 0) + ws.duration / 3600;
-              });
-              Object.entries(bikeHours).forEach(([name, hours]) => {
-                lines.push(`${name}: ${hours.toFixed(1)}h`);
-              });
-            }
-            return lines.length > 0 ? '\n' + lines.join('\n') : '';
+            const details = detailsFor(context);
+            // workSessions sind bereits pro Rad zusammengefasst
+            return details.workSessions.length > 0
+              ? '\n' + details.workSessions.map(ws => `${ws.bikeName}: ${(ws.duration / 3600).toFixed(1)}h`).join('\n')
+              : '';
           }
         }
       }
@@ -1422,7 +1609,11 @@ export function TrackingModule({
           </div>
         )}
         <CardContent className="pt-0 px-0">
-          <div className="overflow-x-auto max-h-[70vh] md:max-h-none">
+          {/* Höhe gedeckelt auf ~20 Zeilen (48px/Zeile + 41px Kopfzeile) bzw. 75% der
+              Bildschirmhöhe, damit man nicht durch die komplette Tabelle scrollen muss,
+              um zu den Diagrammen zu kommen. Bewusst kein overscroll-contain und keine
+              Wheel-Handler: außerhalb dieses Containers scrollt ausschließlich die Seite. */}
+          <div className="overflow-x-auto overflow-y-auto max-h-[70vh] md:max-h-[min(75vh,1000px)]">
             <table className="w-full text-sm text-left text-slate-300 border-separate border-spacing-0">
               <thead className="text-xs text-slate-400 uppercase bg-slate-800 sticky top-0 z-30">
                 <tr>
@@ -1854,6 +2045,11 @@ export function TrackingModule({
               </tbody>
             </table>
           </div>
+          {filteredBikes.length > 20 && (
+            <p className="hidden md:block px-4 py-2 text-xs text-slate-500 border-t border-slate-800">
+              In der Tabelle scrollen · {filteredBikes.length} Einträge
+            </p>
+          )}
         </CardContent>
       </Card>
 
@@ -1941,11 +2137,13 @@ export function TrackingModule({
             <div className="min-w-0">
               <p className="text-sm text-slate-400 font-medium">Gesamtumsatz</p>
               <h3 className="text-2xl font-bold text-slate-100">{formatCurrency(totalUmsatz)}</h3>
+              {renderHypoDelta(kpi.totalUmsatz, baseKpi.totalUmsatz)}
               <div className="mt-2 pt-2 border-t border-slate-700/50">
                 <p className="text-xs text-slate-400 font-medium leading-tight">Ø Standzeit (gelistet → verkauft)</p>
                 <h4 className="text-lg font-bold text-slate-300">
                   {avgStandzeit !== null ? `${avgStandzeit.toFixed(0)} Tage` : '—'}
                 </h4>
+                {renderHypoDelta(kpi.avgStandzeit, baseKpi.avgStandzeit, 'days')}
               </div>
             </div>
           </CardContent>
@@ -1958,6 +2156,7 @@ export function TrackingModule({
             <div>
               <p className="text-sm text-slate-400 font-medium">Gesamtgewinn</p>
               <h3 className="text-2xl font-bold text-slate-100">{formatCurrency(totalProfit)}</h3>
+              {renderHypoDelta(kpi.totalProfit, baseKpi.totalProfit)}
             </div>
           </CardContent>
         </Card>
@@ -1969,23 +2168,33 @@ export function TrackingModule({
             <div className="min-w-0">
               <p className="text-xs text-slate-400 font-medium leading-tight">DB/Schrauberstunde (Verkaufte Räder)</p>
               <h3 className="text-2xl font-bold text-slate-100">{formatCurrency(avgHourlyWage)}/h</h3>
+              {renderHypoDelta(kpi.avgHourlyWage, baseKpi.avgHourlyWage, 'eurPerH')}
               <div className="mt-2 pt-2 border-t border-slate-700/50">
                 <p className="text-xs text-slate-400 font-medium leading-tight">Geschäfts-Stundenlohn (alle Kosten)</p>
                 <h4 className="text-lg font-bold text-slate-300">{formatCurrency(businessHourlyWage)}/h</h4>
+                {renderHypoDelta(kpi.businessHourlyWage, baseKpi.businessHourlyWage, 'eurPerH')}
               </div>
-              {/* Operative Zeit – universelle Stoppuhr */}
+              {/* Operative Zeit – universelle Stoppuhr + Flyer-Verteilzeit */}
               <div className="mt-2 pt-2 border-t border-slate-700/50">
                 <div className="flex items-center justify-between mb-1.5">
                   <p className="text-xs text-slate-400 font-medium leading-tight">Operative Zeit</p>
                   <div className="flex items-center gap-1">
-                    <span className={`text-xs font-mono font-bold ${univIsRunning ? 'text-emerald-400' : 'text-slate-200'}`}>{formatTime(univTime)}</span>
+                    {/* Anzeige inkl. Flyer-Zeit; die Stoppuhr selbst rechnet weiter mit dem
+                        rohen univTime, sonst brennt die Flyer-Zeit dauerhaft in baseSeconds ein. */}
+                    <span className={`text-xs font-mono font-bold ${univIsRunning ? 'text-emerald-400' : 'text-slate-200'}`}>{formatTime(univTime + flyerDurationSeconds)}</span>
                     {!univIsRunning && univTime > 0 && (
-                      <button onClick={handleUnivReset} className="text-slate-600 hover:text-red-400 transition-colors ml-0.5" title="Zurücksetzen">
+                      <button onClick={handleUnivReset} className="text-slate-600 hover:text-red-400 transition-colors ml-0.5" title="Stoppuhr zurücksetzen (Flyer-Zeit bleibt)">
                         <RotateCcw className="w-3 h-3" />
                       </button>
                     )}
                   </div>
                 </div>
+                {flyerDurationSeconds > 0 && (
+                  <div className="flex items-center justify-between -mt-1 mb-1.5">
+                    <span className="text-[11px] text-slate-500">davon Flyer</span>
+                    <span className="text-[11px] font-mono text-slate-500">{(flyerDurationSeconds / 3600).toFixed(1)} h</span>
+                  </div>
+                )}
                 <div className="flex gap-1.5">
                   <button
                     onClick={univIsRunning ? handleUnivStop : handleUnivStart}
@@ -2056,6 +2265,7 @@ export function TrackingModule({
                 <div className="min-w-0">
                   <p className="text-xs text-slate-400 font-medium leading-tight">Gebundenes Kapital (Räder)</p>
                   <h3 className="text-2xl font-bold text-slate-100">{formatCurrency(tiedCapital)}</h3>
+                  {renderHypoDelta(kpi.tiedCapital, baseKpi.tiedCapital)}
                   <div className="mt-2 pt-2 border-t border-slate-700/50 space-y-0.5">
                     <div className="flex justify-between gap-4 text-xs">
                       <span className="text-slate-400">Lagerwert (Teile)</span>
@@ -2063,7 +2273,10 @@ export function TrackingModule({
                     </div>
                     <div className="flex justify-between gap-4 text-xs">
                       <span className="text-slate-400 font-semibold">Gesamt gebunden</span>
-                      <span className="text-blue-400 font-bold whitespace-nowrap">{formatCurrency(totalGebunden)}</span>
+                      <span className="text-blue-400 font-bold whitespace-nowrap">
+                        {formatCurrency(totalGebunden)}
+                        {renderHypoDelta(kpi.totalGebunden, baseKpi.totalGebunden, 'eur', 'inline')}
+                      </span>
                     </div>
                   </div>
                 </div>
@@ -2119,6 +2332,75 @@ export function TrackingModule({
                 )}
               </div>
             )}
+          </CardContent>
+        </Card>
+
+        {/* Erweiterung #4: Pro-Rad- und Pro-Monat-Kennzahlen */}
+        <Card>
+          <CardContent className="p-6 flex items-start space-x-4">
+            <div className="p-3 bg-violet-500/20 rounded-lg text-violet-500 shrink-0">
+              <Tag className="w-6 h-6" />
+            </div>
+            <div className="min-w-0">
+              <p className="text-xs text-slate-400 font-medium leading-tight">Ø Verkaufspreis / Rad</p>
+              <h3 className="text-2xl font-bold text-slate-100">{formatCurrency(kpi.avgSellingPrice)}</h3>
+              {renderHypoDelta(kpi.avgSellingPrice, baseKpi.avgSellingPrice)}
+              <p className="text-xs text-slate-500 mt-1">
+                {kpi.soldCount} {kpi.soldCount === 1 ? 'verkauftes Rad' : 'verkaufte Räder'}
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardContent className="p-6 flex items-start space-x-4">
+            <div className="p-3 bg-teal-500/20 rounded-lg text-teal-500 shrink-0">
+              <PiggyBank className="w-6 h-6" />
+            </div>
+            <div className="min-w-0">
+              <p className="text-xs text-slate-400 font-medium leading-tight">Ø Gewinn / Rad</p>
+              <h3 className={`text-2xl font-bold ${kpi.avgProfitPerBike < 0 ? 'text-red-400' : 'text-slate-100'}`}>
+                {formatCurrency(kpi.avgProfitPerBike)}
+              </h3>
+              {renderHypoDelta(kpi.avgProfitPerBike, baseKpi.avgProfitPerBike)}
+              <p className="text-xs text-slate-500 mt-1">Deckungsbeitrag nach EK + Material</p>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardContent className="p-6 flex items-start space-x-4">
+            <div className="p-3 bg-sky-500/20 rounded-lg text-sky-500 shrink-0">
+              <CalendarClock className="w-6 h-6" />
+            </div>
+            <div className="min-w-0">
+              <p className="text-xs text-slate-400 font-medium leading-tight">Ø Monatslohn (seit Beginn)</p>
+              <h3 className={`text-2xl font-bold ${kpi.avgMonthlyWage < 0 ? 'text-red-400' : 'text-slate-100'}`}>
+                {formatCurrency(kpi.avgMonthlyWage)}
+              </h3>
+              {renderHypoDelta(kpi.avgMonthlyWage, baseKpi.avgMonthlyWage)}
+              <p className="text-xs text-slate-500 mt-1">
+                {trackingStart
+                  ? `seit ${format(parseISO(trackingStart), 'MMM yy', { locale: de })} · ${monthsSinceStart.toFixed(1)} Monate`
+                  : 'noch keine Aufzeichnungen'}
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardContent className="p-6 flex items-start space-x-4">
+            <div className="p-3 bg-cyan-500/20 rounded-lg text-cyan-500 shrink-0">
+              <Repeat className="w-6 h-6" />
+            </div>
+            <div className="min-w-0">
+              <p className="text-xs text-slate-400 font-medium leading-tight">Räder / Monat</p>
+              <h3 className="text-2xl font-bold text-slate-100">{kpi.bikesPerMonth.toFixed(1)}</h3>
+              {renderHypoDelta(kpi.bikesPerMonth, baseKpi.bikesPerMonth, 'count')}
+              <p className="text-xs text-slate-500 mt-1">
+                {kpi.soldCount} Räder in {monthsSinceStart.toFixed(1)} Monaten
+              </p>
+            </div>
           </CardContent>
         </Card>
       </div>
@@ -2987,15 +3269,22 @@ export function TrackingModule({
       )}
 
       {/* Detailed Period Modal */}
-      {selectedPeriodIndex !== null && (
+      {selectedPeriodIndex !== null && (() => {
+        // Wie bei den Stat-Karten: angezeigt wird die Sicht des aktiven Modus,
+        // die Referenz dient nur für die orangenen Delta-Chips.
+        const detail = hypoSeries.periodDetails[selectedPeriodIndex];
+        const baseDetail = baseSeries.periodDetails[selectedPeriodIndex];
+        const stats = periodStats(detail, hypoSeries.stundenlohnData[selectedPeriodIndex]);
+        const baseStats = periodStats(baseDetail, baseSeries.stundenlohnData[selectedPeriodIndex]);
+        return (
         <div className="fixed inset-0 z-[120] flex items-center justify-center bg-slate-950/90 backdrop-blur-md p-4">
           <div className="w-full max-w-2xl bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
             <div className="flex items-center justify-between p-6 border-b border-slate-800 bg-slate-900/50">
               <div>
                 <h2 className="text-2xl font-bold text-slate-100">
-                  Details: {periodDetails[selectedPeriodIndex].label}
-                  <span className={`ml-4 text-lg ${periodDetails[selectedPeriodIndex].balance >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                    Bilanz: {periodDetails[selectedPeriodIndex].balance > 0 ? '+' : ''}{formatCurrency(periodDetails[selectedPeriodIndex].balance)}
+                  Details: {detail.label}
+                  <span className={`ml-4 text-lg ${detail.balance >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                    Bilanz: {detail.balance > 0 ? '+' : ''}{formatCurrency(detail.balance)}
                   </span>
                 </h2>
                 <p className="text-sm text-slate-400">Übersicht der Aktivitäten in diesem Zeitraum</p>
@@ -3012,20 +3301,56 @@ export function TrackingModule({
               {/* Summary Stats */}
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 <div className="bg-slate-800/50 p-4 rounded-xl border border-slate-700/50">
-                  <p className="text-xs text-slate-500 uppercase font-bold tracking-wider mb-1">Gekauft ({periodDetails[selectedPeriodIndex].bought.length})</p>
-                  <p className="text-xl font-bold text-slate-100">{formatCurrency(periodDetails[selectedPeriodIndex].totalPurchasePrice)}</p>
+                  <p className="text-xs text-slate-500 uppercase font-bold tracking-wider mb-1">Gekauft ({detail.bought.length})</p>
+                  <p className="text-xl font-bold text-slate-100">{formatCurrency(detail.totalPurchasePrice)}</p>
+                  {renderHypoDelta(detail.totalPurchasePrice, baseDetail.totalPurchasePrice)}
                 </div>
                 <div className="bg-slate-800/50 p-4 rounded-xl border border-slate-700/50">
-                  <p className="text-xs text-slate-500 uppercase font-bold tracking-wider mb-1">Verkauft ({periodDetails[selectedPeriodIndex].sold.length})</p>
-                  <p className="text-xl font-bold text-slate-100">{formatCurrency(periodDetails[selectedPeriodIndex].totalSellingPrice)}</p>
+                  <p className="text-xs text-slate-500 uppercase font-bold tracking-wider mb-1">Verkauft ({detail.sold.length})</p>
+                  <p className="text-xl font-bold text-slate-100">{formatCurrency(detail.totalSellingPrice)}</p>
+                  {renderHypoDelta(detail.totalSellingPrice, baseDetail.totalSellingPrice)}
                 </div>
                 <div className="bg-slate-800/50 p-4 rounded-xl border border-slate-700/50">
                   <p className="text-xs text-slate-500 uppercase font-bold tracking-wider mb-1">Arbeitszeit</p>
-                  <p className="text-xl font-bold text-slate-100">{periodDetails[selectedPeriodIndex].totalHours.toFixed(1)}h</p>
+                  <p className="text-xl font-bold text-slate-100">{detail.totalHours.toFixed(1)}h</p>
+                  {renderHypoDelta(detail.totalHours, baseDetail.totalHours, 'count')}
                 </div>
                 <div className="bg-slate-800/50 p-4 rounded-xl border border-slate-700/50">
                   <p className="text-xs text-slate-500 uppercase font-bold tracking-wider mb-1">Material</p>
-                  <p className="text-xl font-bold text-slate-100">{formatCurrency(periodDetails[selectedPeriodIndex].totalExpenses)}</p>
+                  <p className="text-xl font-bold text-slate-100">{formatCurrency(detail.totalExpenses)}</p>
+                  {renderHypoDelta(detail.totalExpenses, baseDetail.totalExpenses)}
+                </div>
+              </div>
+
+              {/* Pro-Rad-Kennzahlen dieser Periode */}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 -mt-4">
+                <div className="bg-slate-800/30 p-4 rounded-xl border border-slate-700/40">
+                  <p className="text-xs text-slate-500 uppercase font-bold tracking-wider mb-1">Ø VK / Rad</p>
+                  <p className="text-lg font-bold text-slate-200">
+                    {stats.count > 0 ? formatCurrency(stats.avgSellingPrice) : '—'}
+                  </p>
+                  {renderHypoDelta(stats.avgSellingPrice, baseStats.avgSellingPrice)}
+                </div>
+                <div className="bg-slate-800/30 p-4 rounded-xl border border-slate-700/40">
+                  <p className="text-xs text-slate-500 uppercase font-bold tracking-wider mb-1">Ø Gewinn / Rad</p>
+                  <p className={`text-lg font-bold ${stats.avgProfit < 0 ? 'text-red-400' : 'text-slate-200'}`}>
+                    {stats.count > 0 ? formatCurrency(stats.avgProfit) : '—'}
+                  </p>
+                  {renderHypoDelta(stats.avgProfit, baseStats.avgProfit)}
+                </div>
+                <div className="bg-slate-800/30 p-4 rounded-xl border border-slate-700/40">
+                  <p className="text-xs text-slate-500 uppercase font-bold tracking-wider mb-1">Ø Standzeit</p>
+                  <p className="text-lg font-bold text-slate-200">
+                    {stats.avgStandzeit !== null ? `${stats.avgStandzeit.toFixed(0)} Tage` : '—'}
+                  </p>
+                  {renderHypoDelta(stats.avgStandzeit, baseStats.avgStandzeit, 'days')}
+                </div>
+                <div className="bg-slate-800/30 p-4 rounded-xl border border-slate-700/40">
+                  <p className="text-xs text-slate-500 uppercase font-bold tracking-wider mb-1">Ø Stundenlohn</p>
+                  <p className={`text-lg font-bold ${stats.wage < 0 ? 'text-red-400' : 'text-slate-200'}`}>
+                    {stats.wage !== 0 ? `${formatCurrency(stats.wage)}/h` : '—'}
+                  </p>
+                  {renderHypoDelta(stats.wage, baseStats.wage, 'eurPerH')}
                 </div>
               </div>
 
@@ -3034,11 +3359,11 @@ export function TrackingModule({
                 {/* Inventory Changes */}
                 <div className="space-y-4">
                   <h3 className="text-sm font-bold text-slate-400 uppercase tracking-widest border-b border-slate-800 pb-2">Bestand</h3>
-                  {periodDetails[selectedPeriodIndex].bought.length > 0 && (
+                  {detail.bought.length > 0 && (
                     <div className="space-y-2">
                       <p className="text-xs font-medium text-emerald-500">Neu Gekauft:</p>
                       <ul className="space-y-1">
-                        {periodDetails[selectedPeriodIndex].bought.map((item, i) => (
+                        {detail.bought.map((item, i) => (
                           <li key={i} className="text-sm text-slate-300 flex justify-between items-center">
                             <span className="flex items-center"><Plus className="w-3 h-3 mr-2 text-emerald-500" /> {item.name}</span>
                             <span className="text-slate-500">{formatCurrency(item.price)}</span>
@@ -3047,11 +3372,11 @@ export function TrackingModule({
                       </ul>
                     </div>
                   )}
-                  {periodDetails[selectedPeriodIndex].sold.length > 0 && (
+                  {detail.sold.length > 0 && (
                     <div className="space-y-2">
                       <p className="text-xs font-medium text-orange-500">Verkauft:</p>
                       <ul className="space-y-1">
-                        {periodDetails[selectedPeriodIndex].sold.map((item, i) => (
+                        {detail.sold.map((item, i) => (
                           <li key={i} className="text-sm text-slate-300 flex justify-between items-center">
                             <span className="flex items-center"><Check className="w-3 h-3 mr-2 text-orange-500" /> {item.name}</span>
                             <span className="text-slate-500">{formatCurrency(item.price)}</span>
@@ -3060,7 +3385,7 @@ export function TrackingModule({
                       </ul>
                     </div>
                   )}
-                  {periodDetails[selectedPeriodIndex].bought.length === 0 && periodDetails[selectedPeriodIndex].sold.length === 0 && (
+                  {detail.bought.length === 0 && detail.sold.length === 0 && (
                     <p className="text-sm text-slate-600 italic">Keine Bestandsänderungen.</p>
                   )}
                 </div>
@@ -3068,11 +3393,11 @@ export function TrackingModule({
                 {/* Work & Expenses */}
                 <div className="space-y-4">
                   <h3 className="text-sm font-bold text-slate-400 uppercase tracking-widest border-b border-slate-800 pb-2">Arbeit & Material</h3>
-                  {periodDetails[selectedPeriodIndex].workSessions.length > 0 && (
+                  {detail.workSessions.length > 0 && (
                     <div className="space-y-2">
                       <p className="text-xs font-medium text-blue-500">Arbeitszeiten:</p>
                       <ul className="space-y-1">
-                        {periodDetails[selectedPeriodIndex].workSessions.map((session, i) => (
+                        {detail.workSessions.map((session, i) => (
                           <li key={i} className="text-sm text-slate-300 flex justify-between">
                             <span>{session.bikeName}</span>
                             <span className="text-slate-500">{(session.duration / 3600).toFixed(1)}h</span>
@@ -3081,11 +3406,11 @@ export function TrackingModule({
                       </ul>
                     </div>
                   )}
-                  {periodDetails[selectedPeriodIndex].materialExpenses.length > 0 && (
+                  {detail.materialExpenses.length > 0 && (
                     <div className="space-y-2">
                       <p className="text-xs font-medium text-purple-500">Materialausgaben:</p>
                       <ul className="space-y-1">
-                        {periodDetails[selectedPeriodIndex].materialExpenses.map((exp, i) => (
+                        {detail.materialExpenses.map((exp, i) => (
                           <li key={i} className="text-sm text-slate-300 flex justify-between">
                             <span className="truncate pr-4">{exp.bikeName}: {exp.desc}</span>
                             <span className="text-slate-500 whitespace-nowrap">{formatCurrency(exp.amount)}</span>
@@ -3094,7 +3419,7 @@ export function TrackingModule({
                       </ul>
                     </div>
                   )}
-                  {periodDetails[selectedPeriodIndex].workSessions.length === 0 && periodDetails[selectedPeriodIndex].materialExpenses.length === 0 && (
+                  {detail.workSessions.length === 0 && detail.materialExpenses.length === 0 && (
                     <p className="text-sm text-slate-600 italic">Keine Ausgaben oder Arbeitszeiten.</p>
                   )}
                 </div>
@@ -3108,7 +3433,8 @@ export function TrackingModule({
             </div>
           </div>
         </div>
-      )}
+        );
+      })()}
 
     </div>
   );
