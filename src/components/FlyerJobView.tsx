@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { MapContainer, TileLayer, Polygon, CircleMarker, Circle, useMap, useMapEvents } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import { Crosshair, Plus, Minus, ListChecks, ChevronDown, ChevronUp, MapPin, Check, Navigation } from 'lucide-react';
@@ -37,7 +37,10 @@ function StopFollowOnDrag({ onUserMove }: { onUserMove: () => void }) {
 export default function FlyerJobView({ job }: Props) {
   const [pos, setPos] = useState<[number, number] | null>(null);
   const [accuracy, setAccuracy] = useState<number | null>(null);
-  const [geoError, setGeoError] = useState<string | null>(null);
+  // iOS/Safari zeigt den Standort-Dialog nur zuverlässig nach einer echten
+  // Nutzeraktion. Deshalb kein Auto-Abruf beim Laden, sondern ein Knopf.
+  const [geoStatus, setGeoStatus] = useState<'idle' | 'requesting' | 'active' | 'denied' | 'unavailable' | 'insecure'>('idle');
+  const watchIdRef = useRef<number | null>(null);
   const [follow, setFollow] = useState(true);
   const [listOpen, setListOpen] = useState(false);
   const [done, setDone] = useState<Record<string, boolean>>({});
@@ -76,29 +79,48 @@ export default function FlyerJobView({ job }: Props) {
     };
   }, []);
 
-  // Live-Standort
-  useEffect(() => {
-    if (!('geolocation' in navigator)) {
-      setGeoError('Dieses Gerät liefert keinen Standort.');
-      return;
-    }
-    const id = navigator.geolocation.watchPosition(
+  // Live-Standort – wird bewusst erst auf Tippen gestartet (siehe oben)
+  const startWatch = useCallback(() => {
+    if (!('geolocation' in navigator)) { setGeoStatus('unavailable'); return; }
+    if (watchIdRef.current !== null) return;
+    setGeoStatus('requesting');
+    watchIdRef.current = navigator.geolocation.watchPosition(
       (p) => {
         setPos([p.coords.latitude, p.coords.longitude]);
         setAccuracy(p.coords.accuracy ?? null);
-        setGeoError(null);
+        setGeoStatus('active');
       },
       (err) => {
-        setGeoError(
-          err.code === err.PERMISSION_DENIED
-            ? 'Standort ist blockiert. Bitte im Browser für diese Seite erlauben.'
-            : 'Standort konnte nicht ermittelt werden.'
-        );
+        if (err.code === err.PERMISSION_DENIED) setGeoStatus('denied');
+        else if (err.code === err.TIMEOUT) setGeoStatus('requesting'); // weiter versuchen
+        else setGeoStatus('unavailable');
       },
-      { enableHighAccuracy: true, maximumAge: 2000, timeout: 15000 }
+      { enableHighAccuracy: true, maximumAge: 2000, timeout: 20000 }
     );
-    return () => navigator.geolocation.clearWatch(id);
   }, []);
+
+  useEffect(() => {
+    // Ohne HTTPS gibt es gar keinen Standort – das sonst als "blockiert" zu
+    // melden wäre irreführend.
+    if (!window.isSecureContext) { setGeoStatus('insecure'); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const st = await (navigator as any).permissions?.query({ name: 'geolocation' });
+        if (cancelled || !st) return;
+        if (st.state === 'granted') startWatch();     // schon erlaubt → direkt los
+        else if (st.state === 'denied') setGeoStatus('denied');
+        // 'prompt' → auf den Knopf warten, sonst bleibt der iOS-Dialog aus
+      } catch { /* ohne Permissions-API einfach auf den Knopf warten */ }
+    })();
+    return () => {
+      cancelled = true;
+      if (watchIdRef.current !== null) {
+        navigator.geolocation.clearWatch(watchIdRef.current);
+        watchIdRef.current = null;
+      }
+    };
+  }, [startWatch]);
 
   // Mitführen: Karte folgt dem Standort, stark hineingezoomt
   useEffect(() => {
@@ -114,7 +136,8 @@ export default function FlyerJobView({ job }: Props) {
   const doneCount = Object.values(done).filter(Boolean).length;
 
   const centerOnMe = () => {
-    if (!pos || !mapRef.current) return;
+    if (!pos) { startWatch(); return; } // noch kein Standort → hier anfordern
+    if (!mapRef.current) return;
     setFollow(true);
     mapRef.current.setView(pos, Math.max(mapRef.current.getZoom() || 0, 18), { animate: true });
   };
@@ -140,10 +163,16 @@ export default function FlyerJobView({ job }: Props) {
 
         {/* Statuszeile: bin ich im Gebiet? */}
         <div className="mt-2 flex items-center gap-2 text-xs">
-          {geoError ? (
-            <span className="px-2 py-1 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30">{geoError}</span>
+          {geoStatus === 'insecure' ? (
+            <span className="px-2 py-1 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30">Standort braucht HTTPS – bitte die https-Adresse öffnen.</span>
+          ) : geoStatus === 'unavailable' ? (
+            <span className="px-2 py-1 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30">Standort nicht verfügbar – Ortungsdienste aktiv?</span>
+          ) : geoStatus === 'denied' ? (
+            <span className="px-2 py-1 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30">Standort ist für diese Seite blockiert</span>
           ) : inside === null ? (
-            <span className="px-2 py-1 rounded-full bg-slate-800 text-slate-400 border border-slate-700">Standort wird gesucht…</span>
+            <span className="px-2 py-1 rounded-full bg-slate-800 text-slate-400 border border-slate-700">
+              {geoStatus === 'requesting' ? 'Standort wird gesucht…' : 'Standort noch nicht aktiviert'}
+            </span>
           ) : inside ? (
             <span className="px-2 py-1 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 font-semibold">✓ Du bist im Gebiet</span>
           ) : (
@@ -151,7 +180,7 @@ export default function FlyerJobView({ job }: Props) {
               Noch {distance} m bis zum Gebiet
             </span>
           )}
-          {accuracy != null && !geoError && (
+          {accuracy != null && geoStatus === 'active' && (
             <span className="text-slate-500">±{Math.round(accuracy)} m</span>
           )}
         </div>
@@ -203,15 +232,42 @@ export default function FlyerJobView({ job }: Props) {
           </button>
           <button
             onClick={centerOnMe}
-            disabled={!pos}
-            className={`w-14 h-14 rounded-full flex items-center justify-center shadow-lg border ${
+            className={`w-14 h-14 rounded-full flex items-center justify-center shadow-lg border active:scale-95 ${
               follow && pos ? 'bg-blue-600 border-blue-400' : 'bg-slate-900/90 border-slate-700'
-            } ${!pos ? 'opacity-40' : 'active:scale-95'}`}
+            }`}
             aria-label="Auf meinen Standort zentrieren"
           >
             <Crosshair className="w-7 h-7" />
           </button>
         </div>
+
+        {/* Standort freischalten – der Tipp darauf löst den iOS-Dialog aus */}
+        {!pos && geoStatus !== 'insecure' && (
+          <div className="absolute left-3 right-3 bottom-3 z-[1000]">
+            {geoStatus === 'denied' ? (
+              <div className="rounded-2xl bg-slate-900/95 border border-amber-500/40 p-3 shadow-xl">
+                <p className="text-sm font-semibold text-amber-300">Standort ist blockiert</p>
+                <p className="text-xs text-slate-300 mt-1 leading-relaxed">
+                  <b>iPhone/Safari:</b> oben links auf <b>„aA"</b> tippen → <b>Website-Einstellungen</b> → <b>Standort</b> → <b>Erlauben</b>, dann Seite neu laden.
+                  <br />
+                  Hilft das nicht: <b>Einstellungen → Safari → Standort → Fragen</b> und <b>Einstellungen → Datenschutz → Ortungsdienste</b> einschalten.
+                </p>
+                <button onClick={startWatch} className="mt-2 w-full py-2.5 rounded-xl bg-slate-800 border border-slate-600 font-semibold active:bg-slate-700">
+                  Erneut versuchen
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={startWatch}
+                disabled={geoStatus === 'requesting'}
+                className="w-full py-3.5 rounded-2xl bg-blue-600 text-white font-bold text-base shadow-xl flex items-center justify-center gap-2 active:bg-blue-700 disabled:opacity-70"
+              >
+                <Crosshair className="w-5 h-5" />
+                {geoStatus === 'requesting' ? 'Standort wird gesucht…' : 'Standort aktivieren'}
+              </button>
+            )}
+          </div>
+        )}
 
         {/* Hinweis, wenn Mitführen aus ist */}
         {!follow && pos && (
