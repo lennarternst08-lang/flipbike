@@ -23,30 +23,124 @@ export interface FlyerJob {
   s: JobStreet[];             // Straßenliste
 }
 
-export const JOB_HASH_PREFIX = '#auftrag=';
+// Trennzeichen bewusst "/" statt "=": WhatsApp & Co. beenden die automatische
+// Verlinkung an einem "=", der Link war dann auf dem Handy nicht anklickbar.
+export const JOB_HASH_PREFIX = '#auftrag/';
+const LEGACY_PREFIX = '#auftrag=';
 
-// 5 Nachkommastellen ≈ 1 m Genauigkeit – reicht völlig und hält den Link kurz
-const r5 = (v: number) => Math.round(v * 1e5) / 1e5;
-
-export function encodeJob(job: FlyerJob): string {
-  const compact: FlyerJob = {
-    ...job,
-    p: job.p.map(([a, b]) => [r5(a), r5(b)] as [number, number]),
-    x: job.x.map(([a, b]) => [r5(a), r5(b)] as [number, number]),
-  };
-  const bytes = new TextEncoder().encode(JSON.stringify(compact));
+// --- base64url ---
+function toB64url(bytes: Uint8Array): string {
   let bin = '';
   bytes.forEach((b) => (bin += String.fromCharCode(b)));
-  // base64url, damit der Link ohne Escaping durch Messenger geht
   return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
+function fromB64url(s: string): Uint8Array {
+  const b64 = s.replace(/-/g, '+').replace(/_/g, '/');
+  const bin = atob(b64);
+  return Uint8Array.from(bin, (c) => c.charCodeAt(0));
+}
 
-export function decodeJob(raw: string): FlyerJob | null {
+// --- gzip (verkürzt den Link deutlich; ohne Browser-Unterstützung wird roh gespeichert) ---
+async function gzip(bytes: Uint8Array): Promise<Uint8Array | null> {
   try {
-    const b64 = raw.replace(/-/g, '+').replace(/_/g, '/');
-    const bin = atob(b64);
-    const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
-    const job = JSON.parse(new TextDecoder().decode(bytes));
+    const CS = (globalThis as any).CompressionStream;
+    if (!CS) return null;
+    const stream = new Blob([bytes as any]).stream().pipeThrough(new CS('gzip'));
+    return new Uint8Array(await new Response(stream).arrayBuffer());
+  } catch { return null; }
+}
+async function gunzip(bytes: Uint8Array): Promise<Uint8Array | null> {
+  try {
+    const DS = (globalThis as any).DecompressionStream;
+    if (!DS) return null;
+    const stream = new Blob([bytes as any]).stream().pipeThrough(new DS('gzip'));
+    return new Uint8Array(await new Response(stream).arrayBuffer());
+  } catch { return null; }
+}
+
+// --- Kompaktformat v2 ---
+// Koordinaten als ganzzahlige Differenzen (1e-5 Grad ≈ 1 m): statt
+// "52.26955,10.52356" pro Punkt nur noch wenige Zeichen. Zusätzlich ein
+// Array statt eines Objekts, damit keine Schlüsselnamen mitreisen.
+const E5 = 1e5;
+function packCoords(pts: [number, number][]): number[] {
+  const out: number[] = [];
+  let pLat = 0, pLng = 0;
+  pts.forEach(([lat, lng], i) => {
+    const a = Math.round(lat * E5), b = Math.round(lng * E5);
+    out.push(i === 0 ? a : a - pLat, i === 0 ? b : b - pLng);
+    pLat = a; pLng = b;
+  });
+  return out;
+}
+function unpackCoords(flat: number[]): [number, number][] {
+  const pts: [number, number][] = [];
+  let lat = 0, lng = 0;
+  for (let i = 0; i + 1 < flat.length; i += 2) {
+    lat = i === 0 ? flat[i] : lat + flat[i];
+    lng = i === 0 ? flat[i + 1] : lng + flat[i + 1];
+    pts.push([lat / E5, lng / E5]);
+  }
+  return pts;
+}
+
+export async function encodeJob(job: FlyerJob): Promise<string> {
+  const wire = [
+    2,
+    job.n || '',
+    job.d || '',
+    job.f || 0,
+    job.t || 0,
+    job.note || '',
+    packCoords(job.p),
+    packCoords(job.x),
+    job.s.map((s) => [s.n, s.h.join(','), s.x.join(',')]),
+  ];
+  const raw = new TextEncoder().encode(JSON.stringify(wire));
+  const zipped = await gzip(raw);
+  // Präfix kennzeichnet die Kodierung: z = gepackt, j = roh
+  return zipped ? 'z' + toB64url(zipped) : 'j' + toB64url(raw);
+}
+
+export async function decodeJob(payload: string): Promise<FlyerJob | null> {
+  try {
+    const kind = payload[0];
+    // Alte Links (reines JSON ohne Kennung) weiterhin unterstützen
+    if (kind !== 'z' && kind !== 'j') return decodeLegacy(payload);
+
+    let bytes = fromB64url(payload.slice(1));
+    if (kind === 'z') {
+      const un = await gunzip(bytes);
+      if (!un) return null;
+      bytes = un;
+    }
+    const w = JSON.parse(new TextDecoder().decode(bytes));
+    if (!Array.isArray(w) || w[0] !== 2) return null;
+    const job: FlyerJob = {
+      v: 2,
+      n: w[1] || '',
+      d: w[2] || null,
+      f: w[3] || 0,
+      t: w[4] || 0,
+      note: w[5] || undefined,
+      p: unpackCoords(w[6] || []),
+      x: unpackCoords(w[7] || []),
+      s: (w[8] || []).map((s: any[]) => ({
+        n: s[0] || '',
+        h: s[1] ? String(s[1]).split(',') : [],
+        x: s[2] ? String(s[2]).split(',') : [],
+      })),
+    };
+    return job.p.length >= 3 ? job : null;
+  } catch {
+    return null;
+  }
+}
+
+// Links aus der ersten Fassung (base64 von rohem JSON-Objekt)
+function decodeLegacy(payload: string): FlyerJob | null {
+  try {
+    const job = JSON.parse(new TextDecoder().decode(fromB64url(payload)));
     if (!job || !Array.isArray(job.p) || job.p.length < 3) return null;
     if (!Array.isArray(job.x)) job.x = [];
     if (!Array.isArray(job.s)) job.s = [];
@@ -56,15 +150,16 @@ export function decodeJob(raw: string): FlyerJob | null {
   }
 }
 
-export function buildJobUrl(job: FlyerJob): string {
+export async function buildJobUrl(job: FlyerJob): Promise<string> {
   const { origin, pathname } = window.location;
-  return `${origin}${pathname}${JOB_HASH_PREFIX}${encodeJob(job)}`;
+  return `${origin}${pathname}${JOB_HASH_PREFIX}${await encodeJob(job)}`;
 }
 
-export function readJobFromLocation(): FlyerJob | null {
+export async function readJobFromLocation(): Promise<FlyerJob | null> {
   const h = window.location.hash || '';
-  if (!h.startsWith(JOB_HASH_PREFIX)) return null;
-  return decodeJob(h.slice(JOB_HASH_PREFIX.length));
+  if (h.startsWith(JOB_HASH_PREFIX)) return decodeJob(h.slice(JOB_HASH_PREFIX.length));
+  if (h.startsWith(LEGACY_PREFIX)) return decodeJob(h.slice(LEGACY_PREFIX.length));
+  return null;
 }
 
 // Stabile Kennung eines Auftrags – für den Fortschritt auf dem Gerät des Austrägers

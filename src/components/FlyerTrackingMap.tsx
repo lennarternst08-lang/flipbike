@@ -956,7 +956,7 @@ export function FlyerTrackingMap({ addLog }: FlyerTrackingMapProps = {}) {
 
   // Link für den Austräger: der Auftrag wird komplett in die URL kodiert,
   // damit der Austräger keinen Zugang zu den übrigen Daten braucht.
-  const buildShareLink = (): string | null => {
+  const buildShareLink = async (): Promise<string | null> => {
     if (!jobArea || !jobData) return null;
     const job: FlyerJob = {
       v: 1,
@@ -969,11 +969,11 @@ export function FlyerTrackingMap({ addLog }: FlyerTrackingMapProps = {}) {
       x: excludedHouses.filter((h) => pointInPolygon(h.point, jobArea.points)).map((h) => h.point),
       s: jobData.streets.map((s) => ({ n: s.name, h: s.numbers, x: s.excluded })),
     };
-    return buildJobUrl(job);
+    return await buildJobUrl(job);
   };
 
   const shareJobLink = async () => {
-    const url = buildShareLink();
+    const url = await buildShareLink();
     if (!url) return;
     setShareState('idle');
     try {
