@@ -8,7 +8,7 @@ import { Bar } from 'react-chartjs-2';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
-import { Download, Map as MapIcon, PenTool, XOctagon, Eraser, Undo2, Check, Search, Upload, Pencil, Euro, BarChart3, Ruler, History, Magnet, PlusCircle, Trash2, Clock } from 'lucide-react';
+import { Download, Map as MapIcon, PenTool, XOctagon, Eraser, Undo2, Check, Search, Upload, Pencil, Euro, BarChart3, Ruler, History, Magnet, PlusCircle, Trash2, Clock, ClipboardList, Loader2, Home, X as XIcon } from 'lucide-react';
 import html2canvas from 'html2canvas';
 import { format, parseISO, subMonths, isSameMonth } from 'date-fns';
 import { de } from 'date-fns/locale';
@@ -40,6 +40,69 @@ function polygonAreaM2(points: [number, number][]): number {
   return Math.abs((sum * R * R) / 2);
 }
 const formatArea = (m2: number) => (m2 >= 10000 ? `${(m2 / 10000).toFixed(2)} ha` : `${Math.round(m2)} m²`);
+
+// Distanz zweier Koordinaten in Metern (Haversine)
+function haversineM(a: [number, number], b: [number, number]): number {
+  const R = 6371000;
+  const dLat = toRad(b[0] - a[0]);
+  const dLon = toRad(b[1] - a[1]);
+  const la1 = toRad(a[0]);
+  const la2 = toRad(b[0]);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(la1) * Math.cos(la2) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+
+// Punkt-in-Polygon (Ray-Casting), Punkte als [lat, lng]
+function pointInPolygon(pt: [number, number], poly: [number, number][]): boolean {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const [yi, xi] = poly[i];
+    const [yj, xj] = poly[j];
+    const intersect = (xi > pt[1]) !== (xj > pt[1]) &&
+      pt[0] < ((yj - yi) * (pt[1] - xi)) / (xj - xi) + yi;
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+// Hausnummer in [Zahl, Suffix] für natürliche Sortierung (z.B. "12a" -> [12, "a"])
+function parseHouseNumber(hn: string): [number, string] {
+  const m = String(hn).match(/^(\d+)\s*(.*)$/);
+  return m ? [parseInt(m[1], 10), m[2].toLowerCase()] : [Number.MAX_SAFE_INTEGER, String(hn).toLowerCase()];
+}
+function sortHouseNumbers(nums: string[]): string[] {
+  return [...nums].sort((a, b) => {
+    const [na, sa] = parseHouseNumber(a);
+    const [nb, sb] = parseHouseNumber(b);
+    return na !== nb ? na - nb : sa < sb ? -1 : sa > sb ? 1 : 0;
+  });
+}
+
+// Overpass-Abfrage: alle Adressen (node+way mit addr:housenumber) im Polygon
+async function fetchAddressesInPolygon(points: [number, number][]): Promise<{ street: string; hn: string; lat: number; lon: number }[]> {
+  const polyStr = points.map((p) => `${p[0]} ${p[1]}`).join(' ');
+  const q = `[out:json][timeout:25];(node["addr:housenumber"](poly:"${polyStr}");way["addr:housenumber"](poly:"${polyStr}"););out center tags;`;
+  const res = await fetch('https://overpass-api.de/api/interpreter', {
+    method: 'POST',
+    body: 'data=' + encodeURIComponent(q),
+  });
+  if (!res.ok) throw new Error('Overpass ' + res.status);
+  const json = await res.json();
+  const seen = new Set<string>();
+  const out: { street: string; hn: string; lat: number; lon: number }[] = [];
+  for (const el of json.elements || []) {
+    const hn = el.tags?.['addr:housenumber'];
+    const lat = el.lat ?? el.center?.lat;
+    const lon = el.lon ?? el.center?.lon;
+    if (!hn || lat == null || lon == null) continue;
+    const street = el.tags?.['addr:street'] || 'Ohne Straßennamen';
+    const key = `${street}|${hn}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ street, hn, lat, lon });
+  }
+  return out;
+}
 
 // --- Firestore <-> App Serialisierung (Punkte als JSON-String, da Firestore keine verschachtelten Arrays erlaubt) ---
 const serializeArea = (a: DistributedArea, uid: string) => ({
@@ -125,10 +188,27 @@ export function FlyerTrackingMap({ addLog }: FlyerTrackingMapProps = {}) {
   const [showStats, setShowStats] = useState(false);
 
   const mapRef = useRef<HTMLDivElement>(null);
+  const mapObjRef = useRef<any>(null);          // Leaflet-Karteninstanz (für fitBounds/Capture)
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const jobCardRef = useRef<HTMLDivElement>(null);
   const migratedRef = useRef(false);
   const settingsHydratedRef = useRef(false);   // true nach erstem Settings-Snapshot
   const remoteSettingsRef = useRef(false);      // verhindert Echo-Write nach Remote-Update
+
+  // --- Flyer-Auftrag (Job-Order für Austräger) ---
+  const [showJobModal, setShowJobModal] = useState(false);
+  const [jobArea, setJobArea] = useState<DistributedArea | null>(null);
+  const [jobLoading, setJobLoading] = useState(false);
+  const [jobError, setJobError] = useState<string | null>(null);
+  const [jobMapImage, setJobMapImage] = useState<string | null>(null);
+  const [jobExporting, setJobExporting] = useState(false);
+  const [jobData, setJobData] = useState<null | {
+    streets: { name: string; numbers: string[]; excluded: string[] }[];
+    totalHouses: number;
+    totalAll: number;
+    excludedCount: number;
+    unmatchedExcluded: number;
+  }>(null);
 
   // Auth-Status beobachten
   useEffect(() => onAuthStateChanged(auth, (u) => setUid(u?.uid ?? null)), []);
@@ -642,6 +722,89 @@ export function FlyerTrackingMap({ addLog }: FlyerTrackingMapProps = {}) {
     e.target.value = '';
   };
 
+  // --- Flyer-Auftrag (Job-Order) für den Austräger ---
+  // Karte auf das Gebiet zoomen und als Bild aufnehmen
+  const captureAreaMap = async (area: DistributedArea): Promise<string | null> => {
+    const map = mapObjRef.current;
+    if (!map || !mapRef.current || area.points.length < 3) return null;
+    map.fitBounds(area.points, { padding: [30, 30] });
+    await new Promise((r) => setTimeout(r, 1300)); // Kacheln nachladen lassen
+    const controls = document.querySelectorAll('.leaflet-control-container');
+    controls.forEach((el: any) => (el.style.display = 'none'));
+    try {
+      const canvas = await html2canvas(mapRef.current, { useCORS: true, allowTaint: true });
+      return canvas.toDataURL('image/png');
+    } catch {
+      return null;
+    } finally {
+      controls.forEach((el: any) => (el.style.display = ''));
+    }
+  };
+
+  const generateJobOrder = async (area: DistributedArea) => {
+    setJobArea(area);
+    setShowModal(false);
+    setShowJobModal(true);
+    setJobLoading(true);
+    setJobError(null);
+    setJobData(null);
+    setJobMapImage(null);
+    try {
+      // 1) Kartenbild des Gebiets
+      const img = await captureAreaMap(area);
+      setJobMapImage(img);
+      // 2) Adressen via Overpass/OSM
+      const addrs = await fetchAddressesInPolygon(area.points);
+      // 3) Ausgeschlossene Häuser den Adressen zuordnen (nächste Adresse ≤ 25 m)
+      const excludedInside = excludedHouses.filter((h) => pointInPolygon(h.point, area.points));
+      const matchedExcludedKeys = new Set<string>();
+      excludedInside.forEach((h) => {
+        let best: { key: string; d: number } | null = null;
+        addrs.forEach((a) => {
+          const d = haversineM(h.point, [a.lat, a.lon]);
+          if (d <= 25 && (!best || d < best.d)) best = { key: `${a.street}|${a.hn}`, d };
+        });
+        if (best) matchedExcludedKeys.add(best!.key);
+      });
+      // 4) Nach Straße gruppieren
+      const byStreet: Record<string, { numbers: string[]; excluded: string[] }> = {};
+      addrs.forEach((a) => {
+        const g = (byStreet[a.street] ||= { numbers: [], excluded: [] });
+        if (matchedExcludedKeys.has(`${a.street}|${a.hn}`)) g.excluded.push(a.hn);
+        else g.numbers.push(a.hn);
+      });
+      const streets = Object.entries(byStreet)
+        .map(([name, g]) => ({ name, numbers: sortHouseNumbers(g.numbers), excluded: sortHouseNumbers(g.excluded) }))
+        .filter((s) => s.numbers.length > 0 || s.excluded.length > 0)
+        .sort((a, b) => a.name.localeCompare(b.name, 'de'));
+      const excludedCount = matchedExcludedKeys.size;
+      const totalAll = addrs.length;
+      const totalHouses = totalAll - excludedCount;
+      const unmatchedExcluded = excludedInside.length - excludedCount;
+      setJobData({ streets, totalHouses, totalAll, excludedCount, unmatchedExcluded });
+    } catch (err) {
+      setJobError('Adressdaten konnten nicht geladen werden (OpenStreetMap/Overpass war nicht erreichbar). Bitte in ein paar Sekunden erneut versuchen.');
+    } finally {
+      setJobLoading(false);
+    }
+  };
+
+  const exportJobPng = async () => {
+    if (!jobCardRef.current) return;
+    setJobExporting(true);
+    try {
+      const canvas = await html2canvas(jobCardRef.current, { useCORS: true, allowTaint: true, backgroundColor: '#ffffff', scale: 2 });
+      const link = document.createElement('a');
+      link.download = `flyer-auftrag-${(jobArea?.name || 'gebiet').replace(/[^\w\-]+/g, '_')}-${todayISO()}.png`;
+      link.href = canvas.toDataURL('image/png');
+      link.click();
+    } catch (e) {
+      console.error('Job-Export fehlgeschlagen', e);
+    } finally {
+      setJobExporting(false);
+    }
+  };
+
   // --- Karten-Klick auf Gebiet/Haus ---
   const handleAreaClick = (area: DistributedArea, e: any) => {
     e.originalEvent.stopPropagation();
@@ -812,7 +975,7 @@ export function FlyerTrackingMap({ addLog }: FlyerTrackingMapProps = {}) {
 
       {/* Karte */}
       <div className="relative rounded-lg overflow-hidden border border-slate-700 h-[600px] bg-slate-900 group" ref={mapRef}>
-        <MapContainer center={[CENTER_LAT, CENTER_LNG]} zoom={17} style={{ height: '100%', width: '100%', backgroundColor: '#0f172a' }}>
+        <MapContainer ref={mapObjRef} center={[CENTER_LAT, CENTER_LNG]} zoom={17} style={{ height: '100%', width: '100%', backgroundColor: '#0f172a' }}>
           <TileLayer attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>' url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png" />
           <MapEvents />
           <MapFlyTo target={flyTarget} />
@@ -922,12 +1085,113 @@ export function FlyerTrackingMap({ addLog }: FlyerTrackingMapProps = {}) {
                   <Input type="number" min="0" step="0.01" placeholder="z. B. 25" value={formCost} onChange={(e) => setFormCost(e.target.value)} className="bg-slate-800 h-9" />
                 </label>
                 <Input placeholder="Notiz (optional)" value={formNote} onChange={(e) => setFormNote(e.target.value)} className="bg-slate-800" />
+                {editingAreaId && (
+                  <Button
+                    variant="outline"
+                    className="w-full border-blue-500/50 text-blue-300 hover:bg-blue-500/10 hover:text-blue-200"
+                    onClick={() => { const a = areas.find((x) => x.id === editingAreaId); if (a) generateJobOrder(a); }}
+                  >
+                    <ClipboardList className="w-4 h-4 mr-2" /> Austräger-Auftrag erstellen
+                  </Button>
+                )}
                 <div className="flex space-x-2 pt-1">
                   <Button variant="secondary" className="flex-1" onClick={editingAreaId ? closeModal : cancelDrawing}>Abbrechen</Button>
                   <Button variant="default" className="flex-1 bg-emerald-500 hover:bg-emerald-600 text-white" onClick={handleSaveArea}>Speichern</Button>
                 </div>
               </CardContent>
             </Card>
+          </div>
+        )}
+
+        {/* Job-Order Modal: Auftrag für den Flyer-Austräger */}
+        {showJobModal && (
+          <div className="absolute inset-0 bg-slate-900/70 backdrop-blur-sm z-[1100] flex items-start justify-center p-3 overflow-y-auto">
+            <div className="w-full max-w-lg my-4">
+              <div className="flex items-center justify-between mb-2">
+                <h3 className="text-lg font-bold text-white flex items-center gap-2"><ClipboardList className="w-5 h-5 text-blue-400" /> Austräger-Auftrag</h3>
+                <button onClick={() => setShowJobModal(false)} className="text-slate-400 hover:text-white p-1"><XIcon className="w-5 h-5" /></button>
+              </div>
+
+              {jobLoading && (
+                <div className="bg-slate-800 border border-slate-700 rounded-xl p-8 flex flex-col items-center gap-3 text-slate-300">
+                  <Loader2 className="w-8 h-8 animate-spin text-blue-400" />
+                  <p className="text-sm">Karte &amp; Adressen aus OpenStreetMap werden geladen…</p>
+                </div>
+              )}
+
+              {!jobLoading && jobError && (
+                <div className="bg-slate-800 border border-red-500/40 rounded-xl p-6 text-center space-y-3">
+                  <p className="text-sm text-red-300">{jobError}</p>
+                  <Button variant="secondary" size="sm" onClick={() => jobArea && generateJobOrder(jobArea)}>Erneut versuchen</Button>
+                </div>
+              )}
+
+              {!jobLoading && !jobError && jobData && jobArea && (
+                <>
+                  {/* Exportierbare Auftragskarte (heller "Dokument"-Look) */}
+                  <div ref={jobCardRef} style={{ backgroundColor: '#ffffff', color: '#0f172a' }} className="rounded-xl p-5">
+                    <div className="flex items-start justify-between border-b border-slate-200 pb-3 mb-3">
+                      <div>
+                        <p className="text-[11px] font-bold uppercase tracking-widest text-blue-600">Flyer-Verteilauftrag</p>
+                        <h2 className="text-xl font-extrabold text-slate-900 leading-tight">{jobArea.name || 'Gebiet'}</h2>
+                        <p className="text-xs text-slate-500 mt-0.5">
+                          {jobArea.distributedDate ? format(parseISO(jobArea.distributedDate), 'EEEE, dd.MM.yyyy', { locale: de }) : ''}
+                          {jobArea.status === 'geplant' ? ' · geplant' : ''}
+                        </p>
+                      </div>
+                      <div className="text-right">
+                        <div className="inline-flex items-center gap-1 text-blue-600"><Home className="w-4 h-4" /><span className="text-3xl font-extrabold leading-none">{jobData.totalHouses}</span></div>
+                        <p className="text-[10px] uppercase tracking-wider text-slate-500 font-bold">Häuser auszutragen</p>
+                      </div>
+                    </div>
+
+                    {jobMapImage && (
+                      <img src={jobMapImage} alt="Gebietskarte" className="w-full rounded-lg border border-slate-200 mb-3" />
+                    )}
+
+                    <div className="grid grid-cols-3 gap-2 mb-3 text-center">
+                      <div className="bg-slate-100 rounded-lg py-1.5"><div className="text-lg font-bold text-slate-900">{jobData.totalAll}</div><div className="text-[10px] text-slate-500 uppercase font-bold">Adressen gesamt</div></div>
+                      <div className="bg-slate-100 rounded-lg py-1.5"><div className="text-lg font-bold text-red-600">{jobData.excludedCount}</div><div className="text-[10px] text-slate-500 uppercase font-bold">Keine Werbung</div></div>
+                      <div className="bg-slate-100 rounded-lg py-1.5"><div className="text-lg font-bold text-slate-900">{jobArea.flyerCount || '–'}</div><div className="text-[10px] text-slate-500 uppercase font-bold">Flyer geplant</div></div>
+                    </div>
+
+                    <p className="text-xs font-bold uppercase tracking-wider text-slate-500 mb-1.5">Straßen &amp; Hausnummern</p>
+                    <div className="space-y-2">
+                      {jobData.streets.length === 0 && (
+                        <p className="text-sm text-slate-500">Keine Adressen mit Hausnummern in OpenStreetMap gefunden. Bitte Gebiet vor Ort abgehen.</p>
+                      )}
+                      {jobData.streets.map((s) => (
+                        <div key={s.name} className="border border-slate-200 rounded-lg px-3 py-2">
+                          <div className="flex items-baseline justify-between">
+                            <span className="font-bold text-slate-900">{s.name}</span>
+                            <span className="text-[11px] text-slate-500 font-semibold">{s.numbers.length} Häuser</span>
+                          </div>
+                          {s.numbers.length > 0 && (
+                            <p className="text-sm text-slate-800 leading-snug mt-0.5">{s.numbers.join(', ')}</p>
+                          )}
+                          {s.excluded.length > 0 && (
+                            <p className="text-xs text-red-600 mt-1"><span className="font-bold">NICHT (keine Werbung):</span> {s.excluded.join(', ')}</p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+
+                    {jobData.unmatchedExcluded > 0 && (
+                      <p className="text-xs text-red-600 mt-2">+ {jobData.unmatchedExcluded} markierte „Keine Werbung"-Häuser ohne zugeordnete Adresse – bitte laut Karte beachten.</p>
+                    )}
+
+                    <p className="text-[10px] text-slate-400 mt-3 pt-2 border-t border-slate-200">Adressdaten © OpenStreetMap-Mitwirkende · erstellt am {format(new Date(), 'dd.MM.yyyy')} · Angaben können unvollständig sein.</p>
+                  </div>
+
+                  <div className="flex gap-2 mt-3">
+                    <Button variant="secondary" className="flex-1" onClick={() => setShowJobModal(false)}>Schließen</Button>
+                    <Button className="flex-1 bg-blue-600 hover:bg-blue-700 text-white" onClick={exportJobPng} disabled={jobExporting}>
+                      {jobExporting ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Exportiere…</> : <><Download className="w-4 h-4 mr-2" /> Als Bild exportieren</>}
+                    </Button>
+                  </div>
+                </>
+              )}
+            </div>
           </div>
         )}
       </div>
