@@ -8,11 +8,13 @@ import { Bar } from 'react-chartjs-2';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
-import { Download, Map as MapIcon, PenTool, XOctagon, Eraser, Undo2, Check, Search, Upload, Pencil, Euro, BarChart3, Ruler, History, Magnet, PlusCircle, Trash2, Clock, ClipboardList, Loader2, Home, X as XIcon } from 'lucide-react';
+import { Download, Map as MapIcon, PenTool, XOctagon, Eraser, Undo2, Check, Search, Upload, Pencil, Euro, BarChart3, Ruler, History, Magnet, PlusCircle, Trash2, Clock, ClipboardList, Loader2, Home, X as XIcon, Share2, Link2, Smartphone } from 'lucide-react';
 import html2canvas from 'html2canvas';
 import { format, parseISO, subMonths, isSameMonth } from 'date-fns';
 import { de } from 'date-fns/locale';
 import { DistributedArea, ExcludedHouse, FlyerAreaStatus, FlyerHistoryEntry } from '../types';
+import { FlyerJob, buildJobUrl } from '../flyerJob';
+import { renderAreaMapImage } from '../mapImage';
 import { auth, db } from '../firebase';
 import { onAuthStateChanged } from 'firebase/auth';
 import { collection, doc, setDoc, deleteDoc, onSnapshot, query, where } from 'firebase/firestore';
@@ -226,6 +228,16 @@ function sanitizeColors(doc: Document, root: any) {
 // Einblendung (oder im Hintergrund-Tab, wo die Animation pausiert), sind die
 // Kacheln durchsichtig und die Karte käme dunkel heraus. Deshalb für die
 // Aufnahme kurz auf volle Deckkraft zwingen.
+// Warten bis alle sichtbaren Kacheln fertig geladen sind (sonst weiße Lücken)
+async function waitForTiles(timeoutMs = 5000): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const tiles = Array.from(document.querySelectorAll<HTMLImageElement>('img.leaflet-tile'));
+    if (tiles.length > 0 && tiles.every((t) => t.complete && t.naturalWidth > 0)) return;
+    await new Promise((r) => setTimeout(r, 150));
+  }
+}
+
 function forceTilesVisible(): () => void {
   const tiles = Array.from(document.querySelectorAll<HTMLElement>('.leaflet-tile'));
   const prev = tiles.map((t) => t.style.opacity);
@@ -348,6 +360,7 @@ export function FlyerTrackingMap({ addLog }: FlyerTrackingMapProps = {}) {
   const [jobMapImage, setJobMapImage] = useState<string | null>(null);
   const [jobExporting, setJobExporting] = useState(false);
   const [jobExportError, setJobExportError] = useState<string | null>(null);
+  const [shareState, setShareState] = useState<'idle' | 'copied' | 'failed'>('idle');
   const [jobData, setJobData] = useState<null | {
     streets: { name: string; numbers: string[]; excluded: string[] }[];
     totalHouses: number;
@@ -880,24 +893,16 @@ export function FlyerTrackingMap({ addLog }: FlyerTrackingMapProps = {}) {
   };
 
   // --- Flyer-Auftrag (Job-Order) für den Austräger ---
-  // Karte auf das Gebiet zoomen und als Bild aufnehmen
+  // Kartenbild wird berechnet, nicht von der Live-Karte abfotografiert:
+  // so liegt das Gebiet garantiert vollständig und mittig im Bild und die
+  // Karte des Nutzers springt nicht herum.
   const captureAreaMap = async (area: DistributedArea): Promise<string | null> => {
-    const map = mapObjRef.current;
-    if (!map || !mapRef.current || area.points.length < 3) return null;
-    map.fitBounds(area.points, { padding: [30, 30] });
-    await new Promise((r) => setTimeout(r, 1300)); // Kacheln nachladen lassen
-    const controls = document.querySelectorAll('.leaflet-control-container');
-    controls.forEach((el: any) => (el.style.display = 'none'));
-    const restoreTiles = forceTilesVisible();
     try {
-      const canvas = await captureElement(mapRef.current);
-      return canvas.toDataURL('image/png');
+      const inside = excludedHouses.filter((h) => pointInPolygon(h.point, area.points)).map((h) => h.point);
+      return await renderAreaMapImage(area.points, inside);
     } catch (e) {
-      console.error('Kartenaufnahme fehlgeschlagen', e);
+      console.error('Kartenbild fehlgeschlagen', e);
       return null;
-    } finally {
-      restoreTiles();
-      controls.forEach((el: any) => (el.style.display = ''));
     }
   };
 
@@ -946,6 +951,48 @@ export function FlyerTrackingMap({ addLog }: FlyerTrackingMapProps = {}) {
       setJobError('Adressdaten konnten nicht geladen werden (OpenStreetMap/Overpass war nicht erreichbar). Bitte in ein paar Sekunden erneut versuchen.');
     } finally {
       setJobLoading(false);
+    }
+  };
+
+  // Link für den Austräger: der Auftrag wird komplett in die URL kodiert,
+  // damit der Austräger keinen Zugang zu den übrigen Daten braucht.
+  const buildShareLink = (): string | null => {
+    if (!jobArea || !jobData) return null;
+    const job: FlyerJob = {
+      v: 1,
+      n: jobArea.name || 'Gebiet',
+      d: jobArea.distributedDate || null,
+      f: jobArea.flyerCount || 0,
+      t: jobData.totalHouses,
+      note: jobArea.note || undefined,
+      p: jobArea.points,
+      x: excludedHouses.filter((h) => pointInPolygon(h.point, jobArea.points)).map((h) => h.point),
+      s: jobData.streets.map((s) => ({ n: s.name, h: s.numbers, x: s.excluded })),
+    };
+    return buildJobUrl(job);
+  };
+
+  const shareJobLink = async () => {
+    const url = buildShareLink();
+    if (!url) return;
+    setShareState('idle');
+    try {
+      if (navigator.share) {
+        await navigator.share({ title: `Flyer-Auftrag: ${jobArea?.name || 'Gebiet'}`, text: 'Hier ist dein Flyer-Auftrag mit Karte und Live-Standort:', url });
+        return;
+      }
+      await navigator.clipboard.writeText(url);
+      setShareState('copied');
+      setTimeout(() => setShareState('idle'), 2500);
+    } catch (e: any) {
+      if (e?.name === 'AbortError') return; // Teilen-Dialog abgebrochen
+      try {
+        await navigator.clipboard.writeText(url);
+        setShareState('copied');
+        setTimeout(() => setShareState('idle'), 2500);
+      } catch {
+        setShareState('failed');
+      }
     }
   };
 
@@ -1352,6 +1399,26 @@ export function FlyerTrackingMap({ addLog }: FlyerTrackingMapProps = {}) {
                     )}
 
                     <p className="text-[10px] text-slate-400 mt-3 pt-2 border-t border-slate-200">Adressdaten © OpenStreetMap-Mitwirkende · erstellt am {format(new Date(), 'dd.MM.yyyy')} · Angaben können unvollständig sein.</p>
+                  </div>
+
+                  {/* Live-Link: Karte mit Standort auf dem Handy des Austrägers */}
+                  <div className="mt-3 rounded-xl border border-blue-500/30 bg-blue-500/10 p-3">
+                    <div className="flex items-start gap-2">
+                      <Smartphone className="w-5 h-5 text-blue-300 shrink-0 mt-0.5" />
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold text-blue-200">Live-Karte für den Austräger</p>
+                        <p className="text-xs text-slate-300 mt-0.5">
+                          Handy-Seite mit eingezeichnetem Gebiet und eigenem Standort. Enthält nur diesen Auftrag – keine weiteren Daten.
+                        </p>
+                      </div>
+                    </div>
+                    <Button onClick={shareJobLink} className="w-full mt-2 bg-blue-600 hover:bg-blue-700 text-white">
+                      {shareState === 'copied'
+                        ? <><Check className="w-4 h-4 mr-2" /> Link kopiert</>
+                        : shareState === 'failed'
+                        ? <><Link2 className="w-4 h-4 mr-2" /> Kopieren fehlgeschlagen</>
+                        : <><Share2 className="w-4 h-4 mr-2" /> Link zum Verschicken</>}
+                    </Button>
                   </div>
 
                   {jobExportError && (
