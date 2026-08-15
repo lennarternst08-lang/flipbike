@@ -125,6 +125,126 @@ async function fetchAddressesInPolygon(points: [number, number][]): Promise<{ st
   return out;
 }
 
+// --- Bild-Export: moderne Farbfunktionen für html2canvas übersetzen ---
+// Tailwind v4 liefert Farben als oklch(); Transparenz-Varianten (/70) werden zu
+// oklab(). html2canvas 1.4.1 kann beides nicht parsen und bricht den Export ab.
+// Darum im geklonten DOM jede solche Farbe über einen 1px-Canvas nach rgb() umrechnen.
+// Betroffen sind nicht nur reine Farb-Properties, sondern auch zusammengesetzte
+// Werte wie box-shadow und background-image (Verläufe).
+const COLOR_PROPS = [
+  'color', 'background-color', 'background-image', 'border-top-color', 'border-right-color',
+  'border-bottom-color', 'border-left-color', 'outline-color', 'text-decoration-color',
+  'box-shadow', 'text-shadow', 'fill', 'stroke', 'column-rule-color', 'caret-color',
+  '-webkit-text-fill-color', '-webkit-text-stroke-color', 'text-emphasis-color',
+];
+const MODERN_COLOR = /(color-mix|oklch|oklab|lch|lab|color)\(/;
+// Reihenfolge wichtig: längere Namen zuerst (color-mix vor color)
+const COLOR_FNS = ['color-mix', 'oklch', 'oklab', 'lch', 'lab', 'color'];
+let colorCtx: CanvasRenderingContext2D | null = null;
+
+function cssColorToRgb(value: string): string | null {
+  if (!colorCtx) {
+    const cv = document.createElement('canvas');
+    cv.width = cv.height = 1;
+    colorCtx = cv.getContext('2d', { willReadFrequently: true });
+  }
+  if (!colorCtx) return null;
+  try {
+    colorCtx.clearRect(0, 0, 1, 1);
+    colorCtx.fillStyle = value;
+    colorCtx.fillRect(0, 0, 1, 1);
+    const d = colorCtx.getImageData(0, 0, 1, 1).data;
+    const a = d[3] / 255;
+    return a >= 0.999 ? `rgb(${d[0]}, ${d[1]}, ${d[2]})` : `rgba(${d[0]}, ${d[1]}, ${d[2]}, ${a.toFixed(3)})`;
+  } catch {
+    return null;
+  }
+}
+
+// Ersetzt jede moderne Farbfunktion innerhalb eines Wertes (z. B. in einem
+// box-shadow mit mehreren Schatten) und lässt den Rest unangetastet.
+function convertModernColors(value: string): string {
+  let out = '';
+  let i = 0;
+  while (i < value.length) {
+    let hit = false;
+    for (const fn of COLOR_FNS) {
+      if (!value.startsWith(fn + '(', i)) continue;
+      // Kein Treffer, wenn der Name Teil eines längeren Bezeichners ist (lab in oklab)
+      if (i > 0 && /[a-zA-Z0-9-]/.test(value[i - 1])) continue;
+      let depth = 0;
+      let j = i + fn.length;
+      for (; j < value.length; j++) {
+        if (value[j] === '(') depth++;
+        else if (value[j] === ')') { depth--; if (depth === 0) { j++; break; } }
+      }
+      const raw = value.slice(i, j);
+      out += cssColorToRgb(raw) || raw;
+      i = j;
+      hit = true;
+      break;
+    }
+    if (!hit) { out += value[i]; i++; }
+  }
+  return out;
+}
+
+function sanitizeColors(doc: Document, root: any) {
+  const view = doc.defaultView;
+  if (!view || !root) return;
+  const nodes: any[] = [root, ...Array.from(root.querySelectorAll('*'))];
+  nodes.forEach((n) => {
+    if (!n?.style?.setProperty) return;
+    const cs = view.getComputedStyle(n);
+    COLOR_PROPS.forEach((p) => {
+      const v = cs.getPropertyValue(p);
+      if (v && MODERN_COLOR.test(v)) {
+        const converted = convertModernColors(v);
+        if (converted !== v) n.style.setProperty(p, converted);
+      }
+    });
+
+    // text-transform vorab anwenden: html2canvas misst Text über Range-Offsets
+    // des transformierten Strings. Bei "ß" → "SS" wächst die Länge und der
+    // Offset läuft aus dem Textknoten (Fehler "setEnd offset ... larger than").
+    const tt = cs.getPropertyValue('text-transform');
+    if (tt && tt !== 'none') {
+      Array.from(n.childNodes).forEach((c: any) => {
+        if (c.nodeType === 3 && c.nodeValue) {
+          c.nodeValue =
+            tt === 'uppercase' ? c.nodeValue.toUpperCase()
+            : tt === 'lowercase' ? c.nodeValue.toLowerCase()
+            : c.nodeValue.replace(/\b\w/g, (m: string) => m.toUpperCase());
+        }
+      });
+      n.style.setProperty('text-transform', 'none');
+    }
+  });
+}
+
+// Leaflet blendet Kacheln per Animation ein. Läuft die Aufnahme mitten in der
+// Einblendung (oder im Hintergrund-Tab, wo die Animation pausiert), sind die
+// Kacheln durchsichtig und die Karte käme dunkel heraus. Deshalb für die
+// Aufnahme kurz auf volle Deckkraft zwingen.
+function forceTilesVisible(): () => void {
+  const tiles = Array.from(document.querySelectorAll<HTMLElement>('.leaflet-tile'));
+  const prev = tiles.map((t) => t.style.opacity);
+  tiles.forEach((t) => (t.style.opacity = '1'));
+  return () => tiles.forEach((t, i) => (t.style.opacity = prev[i]));
+}
+
+// Alle Bild-Exporte laufen hierüber, damit die Farbkorrektur nie vergessen wird.
+// Wichtig: html2canvas klont das gesamte Dokument und wertet auch die Vorfahren
+// des Ziels aus (z. B. das Modal-Backdrop) – deshalb das komplette Dokument säubern.
+async function captureElement(el: HTMLElement, opts: any = {}) {
+  return html2canvas(el, {
+    useCORS: true,
+    allowTaint: false, // getaintetes Canvas würde toDataURL() scheitern lassen
+    ...opts,
+    onclone: (doc: Document) => sanitizeColors(doc, doc.documentElement),
+  });
+}
+
 // --- Firestore <-> App Serialisierung (Punkte als JSON-String, da Firestore keine verschachtelten Arrays erlaubt) ---
 const serializeArea = (a: DistributedArea, uid: string) => ({
   id: a.id,
@@ -215,6 +335,10 @@ export function FlyerTrackingMap({ addLog }: FlyerTrackingMapProps = {}) {
   const migratedRef = useRef(false);
   const settingsHydratedRef = useRef(false);   // true nach erstem Settings-Snapshot
   const remoteSettingsRef = useRef(false);      // verhindert Echo-Write nach Remote-Update
+  // Erst wenn die Daten geladen sind, darf der localStorage-Spiegel schreiben.
+  // Bewusst State (kein Ref): so läuft der Spiegel-Effekt erst im Render NACH
+  // dem Laden – mit den geladenen Daten statt mit dem leeren Anfangszustand.
+  const [hydrated, setHydrated] = useState(false);
 
   // --- Flyer-Auftrag (Job-Order für Austräger) ---
   const [showJobModal, setShowJobModal] = useState(false);
@@ -223,6 +347,7 @@ export function FlyerTrackingMap({ addLog }: FlyerTrackingMapProps = {}) {
   const [jobError, setJobError] = useState<string | null>(null);
   const [jobMapImage, setJobMapImage] = useState<string | null>(null);
   const [jobExporting, setJobExporting] = useState(false);
+  const [jobExportError, setJobExportError] = useState<string | null>(null);
   const [jobData, setJobData] = useState<null | {
     streets: { name: string; numbers: string[]; excluded: string[] }[];
     totalHouses: number;
@@ -270,10 +395,13 @@ export function FlyerTrackingMap({ addLog }: FlyerTrackingMapProps = {}) {
     }
   };
 
-  // Historie als Offline-Spiegel + Brücke für KI-Export
+  // Historie als Offline-Spiegel + Brücke für KI-Export.
+  // Erst nach dem Laden schreiben, sonst überschreibt der leere Anfangs-State
+  // beim Mounten die gespeicherten Daten.
   useEffect(() => {
+    if (!hydrated) return;
     localStorage.setItem('flyerTracking_history', JSON.stringify(history));
-  }, [history]);
+  }, [history, hydrated]);
 
   // Einstellungen persistieren: lokal (Offline) + Firestore (geräteübergreifend)
   useEffect(() => {
@@ -333,6 +461,7 @@ export function FlyerTrackingMap({ addLog }: FlyerTrackingMapProps = {}) {
         }
         migratedRef.current = true;
         setAreas(loaded);
+        setHydrated(true);
       });
 
       const qHouses = query(collection(db, 'flyerHouses'), where('userId', '==', uid));
@@ -405,14 +534,18 @@ export function FlyerTrackingMap({ addLog }: FlyerTrackingMapProps = {}) {
       const savedHouses = localStorage.getItem('flyerTracking_excluded');
       if (savedAreas) { try { setAreas(JSON.parse(savedAreas)); } catch {} }
       if (savedHouses) { try { setExcludedHouses(JSON.parse(savedHouses)); } catch {} }
+      setHydrated(true);
     }
   }, [uid]);
 
-  // Offline-Spiegel in localStorage (auch als Backup im Online-Modus)
+  // Offline-Spiegel in localStorage (auch als Backup im Online-Modus).
+  // Achtung: erst nach der Hydration schreiben – sonst löscht der leere
+  // Anfangs-State beim Mounten die gespeicherten Gebiete.
   useEffect(() => {
+    if (!hydrated) return;
     localStorage.setItem('flyerTracking_areas', JSON.stringify(areas));
     localStorage.setItem('flyerTracking_excluded', JSON.stringify(excludedHouses));
-  }, [areas, excludedHouses]);
+  }, [areas, excludedHouses, hydrated]);
 
   // Zeichen-Reststände aufräumen
   useEffect(() => {
@@ -639,15 +772,18 @@ export function FlyerTrackingMap({ addLog }: FlyerTrackingMapProps = {}) {
     if (!mapRef.current) return;
     const controls = document.querySelectorAll('.leaflet-control-container');
     controls.forEach((el: any) => (el.style.display = 'none'));
+    const restoreTiles = forceTilesVisible();
     try {
-      const canvas = await html2canvas(mapRef.current, { useCORS: true, allowTaint: true });
+      const canvas = await captureElement(mapRef.current);
       const link = document.createElement('a');
       link.download = `flyer-tracking-${todayISO()}.png`;
       link.href = canvas.toDataURL('image/png');
       link.click();
     } catch (error) {
       console.error('Failed to export map', error);
+      alert('Karten-Export fehlgeschlagen: ' + ((error as Error)?.message || 'unbekannter Fehler'));
     } finally {
+      restoreTiles();
       controls.forEach((el: any) => (el.style.display = ''));
     }
   };
@@ -752,12 +888,15 @@ export function FlyerTrackingMap({ addLog }: FlyerTrackingMapProps = {}) {
     await new Promise((r) => setTimeout(r, 1300)); // Kacheln nachladen lassen
     const controls = document.querySelectorAll('.leaflet-control-container');
     controls.forEach((el: any) => (el.style.display = 'none'));
+    const restoreTiles = forceTilesVisible();
     try {
-      const canvas = await html2canvas(mapRef.current, { useCORS: true, allowTaint: true });
+      const canvas = await captureElement(mapRef.current);
       return canvas.toDataURL('image/png');
-    } catch {
+    } catch (e) {
+      console.error('Kartenaufnahme fehlgeschlagen', e);
       return null;
     } finally {
+      restoreTiles();
       controls.forEach((el: any) => (el.style.display = ''));
     }
   };
@@ -813,14 +952,19 @@ export function FlyerTrackingMap({ addLog }: FlyerTrackingMapProps = {}) {
   const exportJobPng = async () => {
     if (!jobCardRef.current) return;
     setJobExporting(true);
+    setJobExportError(null);
     try {
-      const canvas = await html2canvas(jobCardRef.current, { useCORS: true, allowTaint: true, backgroundColor: '#ffffff', scale: 2 });
+      const canvas = await captureElement(jobCardRef.current, { backgroundColor: '#ffffff', scale: 2 });
+      const url = canvas.toDataURL('image/png');
       const link = document.createElement('a');
       link.download = `flyer-auftrag-${(jobArea?.name || 'gebiet').replace(/[^\w\-]+/g, '_')}-${todayISO()}.png`;
-      link.href = canvas.toDataURL('image/png');
+      link.href = url;
+      document.body.appendChild(link); // Firefox braucht den Link im DOM
       link.click();
+      link.remove();
     } catch (e) {
       console.error('Job-Export fehlgeschlagen', e);
+      setJobExportError('Export fehlgeschlagen: ' + ((e as Error)?.message || 'unbekannter Fehler'));
     } finally {
       setJobExporting(false);
     }
@@ -997,7 +1141,9 @@ export function FlyerTrackingMap({ addLog }: FlyerTrackingMapProps = {}) {
       {/* Karte */}
       <div className="relative rounded-lg overflow-hidden border border-slate-700 h-[600px] bg-slate-900 group" ref={mapRef}>
         <MapContainer ref={mapObjRef} center={[CENTER_LAT, CENTER_LNG]} zoom={17} style={{ height: '100%', width: '100%', backgroundColor: '#0f172a' }}>
-          <TileLayer attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>' url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png" />
+          {/* crossOrigin ist Pflicht: ohne CORS-Kacheln lässt html2canvas sie beim
+              Bild-Export weg und die Karte käme komplett dunkel heraus */}
+          <TileLayer crossOrigin="anonymous" attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>' url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png" />
           <MapEvents />
           <MapFlyTo target={flyTarget} />
 
@@ -1124,9 +1270,13 @@ export function FlyerTrackingMap({ addLog }: FlyerTrackingMapProps = {}) {
           </div>
         )}
 
-        {/* Job-Order Modal: Auftrag für den Flyer-Austräger */}
-        {showJobModal && (
-          <div className="absolute inset-0 bg-slate-900/70 backdrop-blur-sm z-[1100] flex items-start justify-center p-3 overflow-y-auto">
+      </div>
+
+      {/* Job-Order Modal – bewusst AUSSERHALB des Karten-Containers: sonst nimmt die
+          Kartenaufnahme das offene Modal mit auf und der lange Auftrag würde auf
+          600px Kartenhöhe beschnitten */}
+      {showJobModal && (
+          <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-sm z-[2000] flex items-start justify-center p-3 overflow-y-auto">
             <div className="w-full max-w-lg my-4">
               <div className="flex items-center justify-between mb-2">
                 <h3 className="text-lg font-bold text-white flex items-center gap-2"><ClipboardList className="w-5 h-5 text-blue-400" /> Austräger-Auftrag</h3>
@@ -1204,6 +1354,10 @@ export function FlyerTrackingMap({ addLog }: FlyerTrackingMapProps = {}) {
                     <p className="text-[10px] text-slate-400 mt-3 pt-2 border-t border-slate-200">Adressdaten © OpenStreetMap-Mitwirkende · erstellt am {format(new Date(), 'dd.MM.yyyy')} · Angaben können unvollständig sein.</p>
                   </div>
 
+                  {jobExportError && (
+                    <p className="text-xs text-red-300 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2 mt-3">{jobExportError}</p>
+                  )}
+
                   <div className="flex gap-2 mt-3">
                     <Button variant="secondary" className="flex-1" onClick={() => setShowJobModal(false)}>Schließen</Button>
                     <Button className="flex-1 bg-blue-600 hover:bg-blue-700 text-white" onClick={exportJobPng} disabled={jobExporting}>
@@ -1215,7 +1369,6 @@ export function FlyerTrackingMap({ addLog }: FlyerTrackingMapProps = {}) {
             </div>
           </div>
         )}
-      </div>
     </div>
   );
 }
