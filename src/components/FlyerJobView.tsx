@@ -79,10 +79,19 @@ export default function FlyerJobView({ job }: Props) {
     };
   }, []);
 
+  const stopWatch = useCallback(() => {
+    if (watchIdRef.current !== null) {
+      navigator.geolocation.clearWatch(watchIdRef.current);
+      watchIdRef.current = null;
+    }
+  }, []);
+
   // Live-Standort – wird bewusst erst auf Tippen gestartet (siehe oben)
   const startWatch = useCallback(() => {
     if (!('geolocation' in navigator)) { setGeoStatus('unavailable'); return; }
-    if (watchIdRef.current !== null) return;
+    // Immer frisch starten: eine alte (fehlgeschlagene) Abfrage hat sonst jeden
+    // weiteren Versuch verschluckt – die Meldung blieb dann für immer stehen.
+    stopWatch();
     setGeoStatus('requesting');
     watchIdRef.current = navigator.geolocation.watchPosition(
       (p) => {
@@ -91,36 +100,57 @@ export default function FlyerJobView({ job }: Props) {
         setGeoStatus('active');
       },
       (err) => {
-        if (err.code === err.PERMISSION_DENIED) setGeoStatus('denied');
-        else if (err.code === err.TIMEOUT) setGeoStatus('requesting'); // weiter versuchen
-        else setGeoStatus('unavailable');
+        if (err.code === err.PERMISSION_DENIED) {
+          stopWatch();
+          setGeoStatus('denied');
+        } else {
+          // Kurzzeitige Aussetzer (kein Empfang, Zeitüberschreitung) dürfen eine
+          // bereits laufende Ortung nicht zurückstufen.
+          setGeoStatus((s) => (s === 'active' ? s : err.code === err.TIMEOUT ? 'requesting' : 'unavailable'));
+        }
       },
       { enableHighAccuracy: true, maximumAge: 2000, timeout: 20000 }
     );
-  }, []);
+  }, [stopWatch]);
 
   useEffect(() => {
     // Ohne HTTPS gibt es gar keinen Standort – das sonst als "blockiert" zu
     // melden wäre irreführend.
     if (!window.isSecureContext) { setGeoStatus('insecure'); return; }
     let cancelled = false;
+    let status: any = null;
+
+    // Wird die Erlaubnis außerhalb der Seite geändert (iOS-Einstellungen,
+    // Safaris "aA"-Menü), muss die Meldung von selbst verschwinden.
+    const applyState = () => {
+      if (!status || cancelled) return;
+      if (status.state === 'granted') startWatch();
+      else if (status.state === 'denied') { stopWatch(); setGeoStatus('denied'); }
+      else setGeoStatus((s) => (s === 'active' ? s : 'idle'));
+    };
+
     (async () => {
       try {
-        const st = await (navigator as any).permissions?.query({ name: 'geolocation' });
-        if (cancelled || !st) return;
-        if (st.state === 'granted') startWatch();     // schon erlaubt → direkt los
-        else if (st.state === 'denied') setGeoStatus('denied');
+        status = await (navigator as any).permissions?.query({ name: 'geolocation' });
+        if (cancelled || !status) return;
+        if (status.state === 'granted') startWatch();     // schon erlaubt → direkt los
+        else if (status.state === 'denied') setGeoStatus('denied');
         // 'prompt' → auf den Knopf warten, sonst bleibt der iOS-Dialog aus
+        status.addEventListener?.('change', applyState);
       } catch { /* ohne Permissions-API einfach auf den Knopf warten */ }
     })();
+
+    // Rückkehr aus den Einstellungen: Zustand erneut prüfen
+    const onVisible = () => { if (document.visibilityState === 'visible') applyState(); };
+    document.addEventListener('visibilitychange', onVisible);
+
     return () => {
       cancelled = true;
-      if (watchIdRef.current !== null) {
-        navigator.geolocation.clearWatch(watchIdRef.current);
-        watchIdRef.current = null;
-      }
+      status?.removeEventListener?.('change', applyState);
+      document.removeEventListener('visibilitychange', onVisible);
+      stopWatch();
     };
-  }, [startWatch]);
+  }, [startWatch, stopWatch]);
 
   // Mitführen: Karte folgt dem Standort, stark hineingezoomt
   useEffect(() => {
@@ -163,24 +193,25 @@ export default function FlyerJobView({ job }: Props) {
 
         {/* Statuszeile: bin ich im Gebiet? */}
         <div className="mt-2 flex items-center gap-2 text-xs">
-          {geoStatus === 'insecure' ? (
+          {/* Liegt ein Standort vor, zählt der – nie an einer alten Meldung hängenbleiben */}
+          {pos ? (
+            inside ? (
+              <span className="px-2 py-1 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 font-semibold">✓ Du bist im Gebiet</span>
+            ) : (
+              <span className="px-2 py-1 rounded-full bg-orange-500/15 text-orange-300 border border-orange-500/30 font-semibold">Noch {distance} m bis zum Gebiet</span>
+            )
+          ) : geoStatus === 'insecure' ? (
             <span className="px-2 py-1 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30">Standort braucht HTTPS – bitte die https-Adresse öffnen.</span>
           ) : geoStatus === 'unavailable' ? (
             <span className="px-2 py-1 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30">Standort nicht verfügbar – Ortungsdienste aktiv?</span>
           ) : geoStatus === 'denied' ? (
             <span className="px-2 py-1 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30">Standort ist für diese Seite blockiert</span>
-          ) : inside === null ? (
+          ) : (
             <span className="px-2 py-1 rounded-full bg-slate-800 text-slate-400 border border-slate-700">
               {geoStatus === 'requesting' ? 'Standort wird gesucht…' : 'Standort noch nicht aktiviert'}
             </span>
-          ) : inside ? (
-            <span className="px-2 py-1 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 font-semibold">✓ Du bist im Gebiet</span>
-          ) : (
-            <span className="px-2 py-1 rounded-full bg-orange-500/15 text-orange-300 border border-orange-500/30 font-semibold">
-              Noch {distance} m bis zum Gebiet
-            </span>
           )}
-          {accuracy != null && geoStatus === 'active' && (
+          {accuracy != null && pos && (
             <span className="text-slate-500">±{Math.round(accuracy)} m</span>
           )}
         </div>
