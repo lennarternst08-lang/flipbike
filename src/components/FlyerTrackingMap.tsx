@@ -79,15 +79,36 @@ function sortHouseNumbers(nums: string[]): string[] {
 }
 
 // Overpass-Abfrage: alle Adressen (node+way mit addr:housenumber) im Polygon
+// Öffentliche Overpass-Spiegelserver – werden der Reihe nach probiert (Fallback)
+const OVERPASS_ENDPOINTS = [
+  'https://overpass-api.de/api/interpreter',
+  'https://overpass.private.coffee/api/interpreter',
+  'https://overpass.kumi.systems/api/interpreter',
+];
+
 async function fetchAddressesInPolygon(points: [number, number][]): Promise<{ street: string; hn: string; lat: number; lon: number }[]> {
   const polyStr = points.map((p) => `${p[0]} ${p[1]}`).join(' ');
   const q = `[out:json][timeout:25];(node["addr:housenumber"](poly:"${polyStr}");way["addr:housenumber"](poly:"${polyStr}"););out center tags;`;
-  const res = await fetch('https://overpass-api.de/api/interpreter', {
-    method: 'POST',
-    body: 'data=' + encodeURIComponent(q),
-  });
-  if (!res.ok) throw new Error('Overpass ' + res.status);
-  const json = await res.json();
+
+  let json: any = null;
+  let lastErr: any = null;
+  for (const url of OVERPASS_ENDPOINTS) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 20000); // harter Timeout je Server
+    try {
+      const res = await fetch(url, { method: 'POST', body: 'data=' + encodeURIComponent(q), signal: ctrl.signal });
+      clearTimeout(timer);
+      if (!res.ok) { lastErr = new Error('HTTP ' + res.status); continue; } // 429/504 → nächster Server
+      json = await res.json();
+      break;
+    } catch (e) {
+      clearTimeout(timer);
+      lastErr = e;
+      continue; // Timeout/Netzwerkfehler → nächster Server
+    }
+  }
+  if (!json) throw lastErr || new Error('Overpass nicht erreichbar');
+
   const seen = new Set<string>();
   const out: { street: string; hn: string; lat: number; lon: number }[] = [];
   for (const el of json.elements || []) {
