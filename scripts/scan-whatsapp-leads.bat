@@ -70,6 +70,11 @@ REM --- Schritt 3: Stand erst JETZT fortschreiben. ---
 REM     Bricht Schritt 2 ab, bleibt der alte Stand stehen und dieselben
 REM     Nachrichten kommen beim naechsten Lauf wieder ins Delta.
 "%NODE_BIN%" "%PROJECT%\scripts\whatsapp-mark-scanned.mjs" >> "%LOG%" 2>&1
+
+REM --- Schritt 4: Kontext ins private Repo, damit das Claude-Projekt ihn sieht. ---
+REM     Schlaegt das fehl, ist der Lauf trotzdem erfolgreich - die Leads sind schon da.
+call "%PROJECT%\scripts\push-kontext.bat" >> "%LOG%" 2>&1
+
 echo Lauf beendet. >> "%LOG%"
 
 :done
