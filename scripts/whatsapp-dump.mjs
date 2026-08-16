@@ -23,6 +23,7 @@ import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { copyToCloud } from './cloud-copy.mjs';
 
 const PROJECT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const STORE = 'C:/Users/Hacker.HPGAME.000/whatsapp-mcp/whatsapp-bridge/store';
@@ -40,39 +41,8 @@ const FORCE = process.argv.includes('--force'); // Tageswaechter uebergehen
 // claude.ai ueber den Drive-Connector darauf zugreifen kann.
 // Reihenfolge: Datei whatsapp-export-target.txt (ein Pfad pro Zeile) schlaegt alles,
 // sonst werden die ueblichen Google-Drive-Orte probiert. Fehlt beides, passiert nichts.
-const EXPORT_TARGET_FILE = path.join(PROJECT, 'whatsapp-export-target.txt');
-const EXPORT_SUBDIR = 'FlipBike';
-
-// Google Drive haengt sein Laufwerk nicht immer unter demselben Buchstaben ein
-// (schon beobachtet: G: war da, dann weg). Deshalb alle Buchstaben absuchen statt
-// einen fest zu verdrahten.
-function findExportDir() {
-  try {
-    const configured = fs.readFileSync(EXPORT_TARGET_FILE, 'utf8')
-      .split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith('#'));
-    for (const dir of configured) if (fs.existsSync(dir)) return dir;
-  } catch { /* keine Konfigurationsdatei -> automatisch suchen */ }
-
-  const roots = [];
-  for (let c = 'D'.charCodeAt(0); c <= 'Z'.charCodeAt(0); c++) {
-    const L = String.fromCharCode(c);
-    roots.push(`${L}:/Meine Ablage`, `${L}:/My Drive`);
-  }
-  roots.push(
-    path.join(process.env.USERPROFILE || 'C:/', 'Meine Ablage'),
-    path.join(process.env.USERPROFILE || 'C:/', 'Google Drive'),
-  );
-
-  for (const root of roots) {
-    if (!fs.existsSync(root)) continue;
-    const sub = path.join(root, EXPORT_SUBDIR);
-    try {
-      if (!fs.existsSync(sub)) fs.mkdirSync(sub, { recursive: true });
-      return sub;
-    } catch { /* nicht beschreibbar -> naechster Kandidat */ }
-  }
-  return null;
-}
+// Ablage in den Drive-Ordner steckt in cloud-copy.mjs, weil sie auch nach dem
+// Claude-Schritt nochmal gebraucht wird (fuer die Tagesnotiz).
 
 const EXIT_OK = 0, EXIT_ERROR = 1, EXIT_ALREADY_TODAY = 10, EXIT_NO_NEW = 11;
 
@@ -262,20 +232,10 @@ function main() {
     console.log(`Kontext: ${contextRows.length} Nachrichten (${CONTEXT_DAYS} Tage) -> ${path.basename(CONTEXT_FILE)}`);
     console.log(`Neu seit ${lastScan}: ${deltaRows.length} -> ${path.basename(DELTA_FILE)}`);
 
-    // Zweitablage in den Cloud-Ordner, falls vorhanden. Nie den Lauf scheitern lassen -
-    // der eigentliche Zweck (Leads finden) haengt nicht daran.
-    const exportDir = findExportDir();
-    if (exportDir) {
-      try {
-        const target = path.join(exportDir, 'whatsapp-context.md');
-        fs.copyFileSync(CONTEXT_FILE, target);
-        console.log(`Kopie fuer die Cloud: ${target}`);
-      } catch (e) {
-        console.log(`Hinweis: Cloud-Kopie fehlgeschlagen (${e.message}).`);
-      }
-    } else {
-      console.log('Kein Cloud-Ordner gefunden - Kontext bleibt nur lokal.');
-    }
+    // Zweitablage im Cloud-Ordner, damit der Drive-Connector von claude.ai
+    // live darauf zugreifen kann. Nie den Lauf scheitern lassen - der eigentliche
+    // Zweck (Leads finden) haengt nicht daran.
+    copyToCloud([CONTEXT_FILE]);
 
     if (deltaRows.length === 0) {
       console.log('Nichts Neues - Claude wird nicht gestartet.');
