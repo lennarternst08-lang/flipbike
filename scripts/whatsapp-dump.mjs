@@ -36,6 +36,28 @@ const STATE_FILE = path.join(PROJECT, 'leads-inbox.state.json');
 const CONTEXT_DAYS = 30;
 const FORCE = process.argv.includes('--force'); // Tageswaechter uebergehen
 
+// Optionale Zweitablage fuer den Kontext, damit ein Cloud-Ordner ihn mitnimmt und
+// claude.ai ueber den Drive-Connector darauf zugreifen kann.
+// Reihenfolge: Datei whatsapp-export-target.txt (ein Pfad pro Zeile) schlaegt alles,
+// sonst werden die ueblichen Google-Drive-Orte probiert. Fehlt beides, passiert nichts.
+const EXPORT_TARGET_FILE = path.join(PROJECT, 'whatsapp-export-target.txt');
+const DRIVE_CANDIDATES = [
+  'G:/Meine Ablage',
+  'G:/My Drive',
+  'C:/Users/Hacker.HPGAME.000/Meine Ablage',
+  'C:/Users/Hacker.HPGAME.000/Google Drive',
+];
+
+function findExportDir() {
+  try {
+    const configured = fs.readFileSync(EXPORT_TARGET_FILE, 'utf8')
+      .split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith('#'));
+    for (const dir of configured) if (fs.existsSync(dir)) return dir;
+  } catch { /* keine Konfigurationsdatei -> Kandidaten probieren */ }
+  for (const dir of DRIVE_CANDIDATES) if (fs.existsSync(dir)) return dir;
+  return null;
+}
+
 const EXIT_OK = 0, EXIT_ERROR = 1, EXIT_ALREADY_TODAY = 10, EXIT_NO_NEW = 11;
 
 // --- Zeit ---------------------------------------------------------------
@@ -223,6 +245,21 @@ function main() {
 
     console.log(`Kontext: ${contextRows.length} Nachrichten (${CONTEXT_DAYS} Tage) -> ${path.basename(CONTEXT_FILE)}`);
     console.log(`Neu seit ${lastScan}: ${deltaRows.length} -> ${path.basename(DELTA_FILE)}`);
+
+    // Zweitablage in den Cloud-Ordner, falls vorhanden. Nie den Lauf scheitern lassen -
+    // der eigentliche Zweck (Leads finden) haengt nicht daran.
+    const exportDir = findExportDir();
+    if (exportDir) {
+      try {
+        const target = path.join(exportDir, 'whatsapp-context.md');
+        fs.copyFileSync(CONTEXT_FILE, target);
+        console.log(`Kopie fuer die Cloud: ${target}`);
+      } catch (e) {
+        console.log(`Hinweis: Cloud-Kopie fehlgeschlagen (${e.message}).`);
+      }
+    } else {
+      console.log('Kein Cloud-Ordner gefunden - Kontext bleibt nur lokal.');
+    }
 
     if (deltaRows.length === 0) {
       console.log('Nichts Neues - Claude wird nicht gestartet.');
