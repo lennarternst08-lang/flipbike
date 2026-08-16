@@ -64,24 +64,9 @@ const pointLabelsPlugin = {
   }
 };
 
-// Liquidations-Orange (orange-500 / orange-400) – identisch zum Toggle & den Tabellenzeilen
+// Liquidations-Gold (orange-500 / orange-400) – identisch zum Toggle & den Tabellenzeilen
 const HYPO_COLOR = '#f97316';
-const HYPO_COLOR_SOFT = 'rgba(249, 115, 22, 0.15)';
-
-/**
- * Baut aus realer und hypothetischer Serie einen Ast, der nur die letzte Periode abzweigt:
- * überall `null`, am vorletzten Punkt der *reale* Wert (Ansatzpunkt auf der echten Linie),
- * am letzten Punkt der hypothetische. Der Liquidationsmodus bucht alle Simulations-Umsätze
- * auf heute, deshalb unterscheidet sich ohnehin nur das letzte Bucket.
- */
-const branchLastPeriod = (base: number[], hypo: number[]): (number | null)[] => {
-  const last = hypo.length - 1;
-  return hypo.map((value, i) => {
-    if (i === last) return value;
-    if (i === last - 1) return base[i];
-    return null;
-  });
-};
+const HYPO_COLOR_SOFT = 'rgba(249, 115, 22, 0.35)';
 
 ChartJS.register(
   CategoryScale,
@@ -1014,22 +999,25 @@ export function TrackingModule({
     return { investData, umsatzData, gewinnData, periodDetails, gesamtGewinnData, stundenlohnData };
   };
 
-  const hypoSeries = computeSeries(bikes);
-  // Die dargestellten Linien zeigen immer die Realität; der Liquidationsmodus kommt
-  // ausschließlich als zusätzlicher orangener Ast dazu (siehe hypoDatasets unten).
-  const baseSeries = isHypotheticalMode ? computeSeries(rawBikes) : hypoSeries;
-  const { investData, umsatzData, gewinnData, periodDetails, gesamtGewinnData, stundenlohnData } = baseSeries;
+  // "series" ist die tatsächlich angezeigte/bewegliche Linie – bei ausgeschaltetem Modus
+  // identisch zur Realität, im Liquidationsmodus die simulierten Werte. Das ist bewusst
+  // wieder wie vor dem Delta-Umbau: EIN Strich, der sich mit dem Modus verändert.
+  const series = computeSeries(bikes);
+  // "realSeries" ist nur bei aktivem Modus überhaupt anders als series und dient
+  // ausschließlich als Referenzlinie für die goldene Differenzfläche.
+  const realSeries = isHypotheticalMode ? computeSeries(rawBikes) : series;
+  const { investData, umsatzData, gewinnData, periodDetails, gesamtGewinnData, stundenlohnData } = series;
 
   // Tooltip-Fußzeilen sollen die Daten der Linie zeigen, über der man hovert.
   const detailsFor = (context: any) => {
     const index = context[0].dataIndex;
-    return context[0].dataset?._hypoLabelOnly
-      ? hypoSeries.periodDetails[index]
-      : baseSeries.periodDetails[index];
+    return context[0].dataset?._isRealLine
+      ? realSeries.periodDetails[index]
+      : series.periodDetails[index];
   };
 
   // Pro-Rad-Kennzahlen einer einzelnen Periode (fürs Monats-Detail-Modal)
-  const periodStats = (detail: typeof baseSeries.periodDetails[number], wage: number) => {
+  const periodStats = (detail: typeof series.periodDetails[number], wage: number) => {
     const count = detail.sold.length;
     const standzeiten = detail.sold.map(s => s.standzeit).filter((v): v is number => v !== null);
     return {
@@ -1041,21 +1029,55 @@ export function TrackingModule({
     };
   };
 
-  // Dataset-Fabrik für den Liquidations-Ast; gibt [] zurück, wenn der Modus aus ist.
-  const hypoDataset = (label: string, base: number[], hypo: number[]) =>
-    isHypotheticalMode
-      ? [{
-          label,
-          data: branchLastPeriod(base, hypo),
-          borderColor: HYPO_COLOR,
-          backgroundColor: HYPO_COLOR_SOFT,
-          borderDash: [6, 4],
-          tension: 0.1,
-          fill: false,
-          spanGaps: false,
-          _hypoLabelOnly: true,
-        }]
-      : [];
+  /**
+   * Baut die Dataset(s) für eine Kennzahl. Bei ausgeschaltetem Modus genau ein Strich
+   * (wie vor dem Delta-Umbau). Im Liquidationsmodus zusätzlich die reale Linie darunter,
+   * plus eine goldene Fläche/Segmentfärbung dort, wo die angezeigte Linie von ihr abweicht
+   * – bei diesem Modus üblicherweise nur die aktuelle (letzte) Periode.
+   */
+  const hypoAwareDatasets = (
+    label: string,
+    displayData: number[],
+    realData: number[],
+    baseColor: string,
+    baseFillColor: string,
+    offModeFill: boolean = false
+  ) => {
+    if (!isHypotheticalMode) {
+      return [{ label, data: displayData, borderColor: baseColor, backgroundColor: baseFillColor, tension: 0.1, fill: offModeFill }];
+    }
+    const diffAt = (i: number) => Math.abs((displayData[i] ?? 0) - (realData[i] ?? 0)) >= 0.005;
+    return [
+      {
+        label: `${label} (real)`,
+        data: realData,
+        borderColor: baseColor,
+        backgroundColor: offModeFill ? baseFillColor : 'transparent',
+        tension: 0.1,
+        fill: offModeFill,
+        pointRadius: 2,
+        order: 2,
+        _isRealLine: true,
+      },
+      {
+        label,
+        data: displayData,
+        borderColor: baseColor,
+        backgroundColor: HYPO_COLOR_SOFT,
+        tension: 0.1,
+        // Füllt zur direkt davorstehenden Datenreihe (der realen Linie) – die Fläche
+        // ist überall dort unsichtbar, wo beide Linien identisch sind.
+        fill: { target: '-1', above: HYPO_COLOR_SOFT, below: HYPO_COLOR_SOFT },
+        segment: {
+          borderColor: (ctx: any) => (diffAt(ctx.p0DataIndex) || diffAt(ctx.p1DataIndex)) ? HYPO_COLOR : baseColor,
+        },
+        pointBackgroundColor: (ctx: any) => diffAt(ctx.dataIndex) ? HYPO_COLOR : baseColor,
+        pointBorderColor: (ctx: any) => diffAt(ctx.dataIndex) ? HYPO_COLOR : baseColor,
+        order: 1,
+        _hypoLabelOnly: true,
+      },
+    ];
+  };
 
   const commonOptions = {
     responsive: true,
@@ -1113,17 +1135,7 @@ export function TrackingModule({
 
   const stundenlohnChartData = {
     labels,
-    datasets: [
-      {
-        label: 'Stundenlohn (€/h)',
-        data: stundenlohnData,
-        borderColor: '#3b82f6',
-        backgroundColor: 'rgba(59, 130, 246, 0.1)',
-        tension: 0.1,
-        fill: false,
-      },
-      ...hypoDataset('Liquidation (hypothetisch)', stundenlohnData, hypoSeries.stundenlohnData),
-    ]
+    datasets: hypoAwareDatasets('Stundenlohn (€/h)', stundenlohnData, realSeries.stundenlohnData, '#3b82f6', 'rgba(59, 130, 246, 0.1)'),
   };
 
   const stundenlohnOptions = {
@@ -1179,32 +1191,15 @@ export function TrackingModule({
 
   const gesamtGewinnChartData = {
     labels,
-    datasets: [
-      {
-        label: 'Gesamtgewinn (€)',
-        data: gesamtGewinnData,
-        borderColor: '#3b82f6',
-        backgroundColor: 'rgba(59, 130, 246, 0.1)',
-        tension: 0.1,
-        fill: false,
-      },
-      ...hypoDataset('Liquidation (hypothetisch)', gesamtGewinnData, hypoSeries.gesamtGewinnData),
-    ]
+    datasets: hypoAwareDatasets('Gesamtgewinn (€)', gesamtGewinnData, realSeries.gesamtGewinnData, '#3b82f6', 'rgba(59, 130, 246, 0.1)'),
   };
 
   const gewinnPeriodeChartData = {
     labels,
-    datasets: [
-      {
-        label: `Gewinn / ${timeframe === 'day' ? 'Tag' : timeframe === 'week' ? 'Woche' : timeframe === 'month' ? 'Monat' : 'Jahr'}`,
-        data: gewinnData,
-        borderColor: '#3b82f6',
-        backgroundColor: 'rgba(59, 130, 246, 0.1)',
-        tension: 0.1,
-        fill: false,
-      },
-      ...hypoDataset('Liquidation (hypothetisch)', gewinnData, hypoSeries.gewinnData),
-    ]
+    datasets: hypoAwareDatasets(
+      `Gewinn / ${timeframe === 'day' ? 'Tag' : timeframe === 'week' ? 'Woche' : timeframe === 'month' ? 'Monat' : 'Jahr'}`,
+      gewinnData, realSeries.gewinnData, '#3b82f6', 'rgba(59, 130, 246, 0.1)'
+    ),
   };
 
   const investUmsatzChartData = {
@@ -1218,16 +1213,9 @@ export function TrackingModule({
         tension: 0.1,
         fill: true,
       },
-      {
-        label: 'Umsatz / Periode',
-        data: umsatzData,
-        borderColor: '#10b981',
-        backgroundColor: 'rgba(16, 185, 129, 0.2)',
-        tension: 0.1,
-        fill: true,
-      },
-      // Nur der Umsatz verändert sich im Liquidationsmodus – der Invest bleibt real.
-      ...hypoDataset('Umsatz (Liquidation)', umsatzData, hypoSeries.umsatzData),
+      // Nur der Umsatz verändert sich im Liquidationsmodus – der Invest bleibt real,
+      // deshalb bekommt nur Umsatz die reale Referenzlinie + goldene Differenzfläche.
+      ...hypoAwareDatasets('Umsatz / Periode', umsatzData, realSeries.umsatzData, '#10b981', 'rgba(16, 185, 129, 0.2)', true),
     ]
   };
 
@@ -3357,10 +3345,10 @@ export function TrackingModule({
       {selectedPeriodIndex !== null && (() => {
         // Wie bei den Stat-Karten: angezeigt wird die Sicht des aktiven Modus,
         // die Referenz dient nur für die orangenen Delta-Chips.
-        const detail = hypoSeries.periodDetails[selectedPeriodIndex];
-        const baseDetail = baseSeries.periodDetails[selectedPeriodIndex];
-        const stats = periodStats(detail, hypoSeries.stundenlohnData[selectedPeriodIndex]);
-        const baseStats = periodStats(baseDetail, baseSeries.stundenlohnData[selectedPeriodIndex]);
+        const detail = series.periodDetails[selectedPeriodIndex];
+        const baseDetail = realSeries.periodDetails[selectedPeriodIndex];
+        const stats = periodStats(detail, series.stundenlohnData[selectedPeriodIndex]);
+        const baseStats = periodStats(baseDetail, realSeries.stundenlohnData[selectedPeriodIndex]);
         return (
         <div className="fixed inset-0 z-[120] flex items-center justify-center bg-slate-950/90 backdrop-blur-md p-4">
           <div className="w-full max-w-2xl bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
