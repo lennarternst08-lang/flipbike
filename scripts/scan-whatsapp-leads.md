@@ -59,7 +59,30 @@ Format:
 nach einem erfolgreichen Lauf. Würde der Stand hier schon fortgeschrieben, gingen bei einem
 Abbruch Nachrichten verloren.
 
-## 4. Melden
+## 4. Tagesnotiz schreiben
+
+**Oben** in `whatsapp-zusammenfassung.md` einen neuen Abschnitt einfügen (neueste zuerst,
+Datei anlegen falls sie fehlt). Höchstens 6 Zeilen, in normalem Deutsch, keine Tabelle:
+
+```markdown
+## 2026-08-16 21:14
+
+- **Hk** bietet zwei Damenräder an, eines geschenkt. Adresse fehlt noch → nachfragen.
+- **Raphi** will wegen der Schaltung vorbeikommen, Termin offen.
+- Keine neuen Leads für die Karte.
+```
+
+Regeln dafür:
+- Nur was **handlungsrelevant** ist: neue Angebote, offene Rückfragen, Termine.
+- Reines Geplauder und Danksagungen weglassen.
+- Wo etwas von dir zu tun ist, das mit „→" anhängen.
+- Telefonnummern nicht aufschreiben.
+- Ist nichts Relevantes dabei, nur eine Zeile: „Nichts Neues von Belang."
+
+Die Datei ist der Tagesüberblick – sie wird ins private Repo gepusht und ist damit auch
+im Claude-Projekt lesbar. Bestehende Abschnitte **nie** ändern, nur oben ergänzen.
+
+## 5. Melden
 
 Kurz zurückgeben, wie viele Leads dazugekommen sind und welche. Übernommen werden sie
 erst, wenn in der Flyerkarte auf **Übernehmen** geklickt wird.

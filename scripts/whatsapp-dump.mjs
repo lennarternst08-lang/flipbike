@@ -41,20 +41,36 @@ const FORCE = process.argv.includes('--force'); // Tageswaechter uebergehen
 // Reihenfolge: Datei whatsapp-export-target.txt (ein Pfad pro Zeile) schlaegt alles,
 // sonst werden die ueblichen Google-Drive-Orte probiert. Fehlt beides, passiert nichts.
 const EXPORT_TARGET_FILE = path.join(PROJECT, 'whatsapp-export-target.txt');
-const DRIVE_CANDIDATES = [
-  'G:/Meine Ablage',
-  'G:/My Drive',
-  'C:/Users/Hacker.HPGAME.000/Meine Ablage',
-  'C:/Users/Hacker.HPGAME.000/Google Drive',
-];
+const EXPORT_SUBDIR = 'FlipBike';
 
+// Google Drive haengt sein Laufwerk nicht immer unter demselben Buchstaben ein
+// (schon beobachtet: G: war da, dann weg). Deshalb alle Buchstaben absuchen statt
+// einen fest zu verdrahten.
 function findExportDir() {
   try {
     const configured = fs.readFileSync(EXPORT_TARGET_FILE, 'utf8')
       .split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith('#'));
     for (const dir of configured) if (fs.existsSync(dir)) return dir;
-  } catch { /* keine Konfigurationsdatei -> Kandidaten probieren */ }
-  for (const dir of DRIVE_CANDIDATES) if (fs.existsSync(dir)) return dir;
+  } catch { /* keine Konfigurationsdatei -> automatisch suchen */ }
+
+  const roots = [];
+  for (let c = 'D'.charCodeAt(0); c <= 'Z'.charCodeAt(0); c++) {
+    const L = String.fromCharCode(c);
+    roots.push(`${L}:/Meine Ablage`, `${L}:/My Drive`);
+  }
+  roots.push(
+    path.join(process.env.USERPROFILE || 'C:/', 'Meine Ablage'),
+    path.join(process.env.USERPROFILE || 'C:/', 'Google Drive'),
+  );
+
+  for (const root of roots) {
+    if (!fs.existsSync(root)) continue;
+    const sub = path.join(root, EXPORT_SUBDIR);
+    try {
+      if (!fs.existsSync(sub)) fs.mkdirSync(sub, { recursive: true });
+      return sub;
+    } catch { /* nicht beschreibbar -> naechster Kandidat */ }
+  }
   return null;
 }
 

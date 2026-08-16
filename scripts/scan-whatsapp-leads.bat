@@ -57,7 +57,7 @@ REM     uebergibt cmd die Kontrolle dorthin und kehrt NIE zurueck - Schritt 3
 REM     wuerde stillschweigend nie laufen.
 REM     allowedTools bewusst ohne Bash und ohne MCP: so kann der Lauf nicht an
 REM     einer Freigabe haengenbleiben. "< NUL" verhindert die Eingabeumleitung.
-call "%CLAUDE_BIN%" -p "Folge der Anleitung in scripts/scan-whatsapp-leads.md. Werte ausschliesslich whatsapp-neu.md aus und trage neue Leads in leads-inbox.json ein. Gib zum Schluss eine einzeilige Zusammenfassung aus." ^
+call "%CLAUDE_BIN%" -p "Folge der Anleitung in scripts/scan-whatsapp-leads.md. Werte ausschliesslich whatsapp-neu.md aus, trage neue Leads in leads-inbox.json ein und schreibe die Tagesnotiz oben in whatsapp-zusammenfassung.md. Gib zum Schluss eine einzeilige Zusammenfassung aus." ^
   --allowedTools "Read,Write,Edit,Glob,Grep" ^
   < NUL >> "%LOG%" 2>&1
 
