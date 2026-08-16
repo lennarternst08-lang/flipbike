@@ -32,6 +32,20 @@ echo. >> "%LOG%"
 echo ===== Lauf %DATE% %TIME% ===== >> "%LOG%"
 echo claude: %CLAUDE_BIN% >> "%LOG%"
 
+REM --- Schritt 0: Sicherstellen, dass die Bridge laeuft. ---
+REM     Wichtig: Ist sie tot, waechst messages.db nicht mehr und der Job meldet
+REM     faelschlich "nichts Neues", obwohl in WhatsApp Nachrichten liegen. Genau
+REM     das war der Fall, nachdem die eigene Bridge-Aufgabe noch nie gelaufen war.
+REM     Nur pruefen und ggf. starten - hier wird NICHT gewartet und kein LLM gefragt.
+netstat -ano | findstr ":8080" | findstr "LISTENING" >nul 2>&1
+if errorlevel 1 (
+  echo Bridge war aus - wird gestartet. >> "%LOG%"
+  start "" /min cmd /c "C:\Users\Hacker.HPGAME.000\Desktop\whatsappkonsole.bat"
+  timeout /t 25 /nobreak >nul
+) else (
+  echo Bridge laeuft. >> "%LOG%"
+)
+
 REM --- Schritt 1: Nachrichten direkt aus der Bridge-Datenbank abziehen. ---
 REM     Kein MCP, kein LLM. Exit-Code steuert, ob es ueberhaupt weitergeht.
 "%NODE_BIN%" "%PROJECT%\scripts\whatsapp-dump.mjs" >> "%LOG%" 2>&1
