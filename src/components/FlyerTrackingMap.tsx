@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { MapContainer, TileLayer, Polygon, Polyline, CircleMarker, useMapEvents, useMap, Tooltip } from 'react-leaflet';
+import { MapContainer, TileLayer, Polygon, Polyline, CircleMarker, Marker, Popup, useMapEvents, useMap, Tooltip } from 'react-leaflet';
+import { divIcon } from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import {
   Chart as ChartJS, CategoryScale, LinearScale, BarElement, Title, Tooltip as ChartTooltip, Legend
@@ -12,12 +13,16 @@ import { Download, Map as MapIcon, PenTool, XOctagon, Eraser, Undo2, Check, Sear
 import html2canvas from 'html2canvas';
 import { format, parseISO, subMonths, isSameMonth } from 'date-fns';
 import { de } from 'date-fns/locale';
-import { DistributedArea, ExcludedHouse, FlyerAreaStatus, FlyerHistoryEntry } from '../types';
+import { Bike, DistributedArea, ExcludedHouse, FlyerAreaStatus, FlyerHistoryEntry, FlyerLead, FlyerLeadSource } from '../types';
 import { FlyerJob, buildJobUrl } from '../flyerJob';
 import { renderAreaMapImage } from '../mapImage';
 import { auth, db } from '../firebase';
 import { onAuthStateChanged } from 'firebase/auth';
-import { collection, doc, setDoc, deleteDoc, onSnapshot, query, where } from 'firebase/firestore';
+import { collection, doc, setDoc, updateDoc, deleteDoc, onSnapshot, query, where, arrayUnion, arrayRemove } from 'firebase/firestore';
+import {
+  DEFAULT_PLZ, LEAD_KIND, addressKey, deserializeLead, findExistingLead,
+  isExcludedDoc, isLeadDoc, serializeLead, throttledGeocode,
+} from '../lib/flyerLeads';
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, Title, ChartTooltip, Legend);
 
@@ -303,14 +308,27 @@ function MapFlyTo({ target }: { target: { lat: number; lng: number; ts: number }
   return null;
 }
 
+// Roter Punkt für Leads. Bewusst ein divIcon: CircleMarker lässt sich in Leaflet 1.9
+// nicht ziehen, und divIcon spart das Nachladen von marker-icon.png (404 im Build).
+const leadIcon = divIcon({
+  className: '',
+  iconSize: [16, 16],
+  iconAnchor: [8, 8],
+  popupAnchor: [0, -10],
+  html: '<div style="width:16px;height:16px;border-radius:50%;background:#e11d48;border:2px solid #fff;box-shadow:0 0 0 1px #881337"></div>',
+});
+
 interface FlyerTrackingMapProps {
   addLog?: (message: string, module?: 'tracking' | 'workshop' | 'stopwatch' | 'system', revertAction?: any) => void;
+  bikes?: Bike[];
 }
 
-export function FlyerTrackingMap({ addLog }: FlyerTrackingMapProps = {}) {
+export function FlyerTrackingMap({ addLog, bikes = [] }: FlyerTrackingMapProps = {}) {
   const [uid, setUid] = useState<string | null>(auth.currentUser?.uid ?? null);
   const [areas, setAreas] = useState<DistributedArea[]>([]);
   const [excludedHouses, setExcludedHouses] = useState<ExcludedHouse[]>([]);
+  // Leads liegen bewusst NUR hier und in Firestore – nie in localStorage (personenbezogen).
+  const [leads, setLeads] = useState<FlyerLead[]>([]);
 
   const [mode, setMode] = useState<Mode>('idle');
   const [drawingPoints, setDrawingPoints] = useState<[number, number][]>([]);
@@ -340,11 +358,29 @@ export function FlyerTrackingMap({ addLog }: FlyerTrackingMapProps = {}) {
   const [marginPerCustomer, setMarginPerCustomer] = useState('');
   const [showStats, setShowStats] = useState(false);
 
+  // --- Leads (Anfragen auf Flyer hin) ---
+  const [showLeadModal, setShowLeadModal] = useState(false);
+  const [editingLeadId, setEditingLeadId] = useState<string | null>(null);
+  const [leadStreet, setLeadStreet] = useState('');
+  const [leadPlz, setLeadPlz] = useState(DEFAULT_PLZ);
+  const [leadName, setLeadName] = useState('');
+  const [leadNote, setLeadNote] = useState('');
+  const [leadBusy, setLeadBusy] = useState(false);
+  const [leadError, setLeadError] = useState<string | null>(null);
+  const [leadHint, setLeadHint] = useState<string | null>(null);
+  const [showLeadImport, setShowLeadImport] = useState(false);
+  const [leadPasteText, setLeadPasteText] = useState('');
+  const [leadImportBusy, setLeadImportBusy] = useState(false);
+  const [leadImportInfo, setLeadImportInfo] = useState<string | null>(null);
+  const [inboxOffer, setInboxOffer] = useState<any[] | null>(null); // dev-only Eingangskorb
+
   const mapRef = useRef<HTMLDivElement>(null);
   const mapObjRef = useRef<any>(null);          // Leaflet-Karteninstanz (für fitBounds/Capture)
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const leadFileInputRef = useRef<HTMLInputElement>(null); // eigener Ref – nicht mit dem GeoJSON-Import teilen
   const jobCardRef = useRef<HTMLDivElement>(null);
   const migratedRef = useRef(false);
+  const housesMigratedRef = useRef(false);      // Legacy-Migration der Häuser nur einmal versuchen
   const settingsHydratedRef = useRef(false);   // true nach erstem Settings-Snapshot
   const remoteSettingsRef = useRef(false);      // verhindert Echo-Write nach Remote-Update
   // Erst wenn die Daten geladen sind, darf der localStorage-Spiegel schreiben.
@@ -477,13 +513,14 @@ export function FlyerTrackingMap({ addLog }: FlyerTrackingMapProps = {}) {
         setHydrated(true);
       });
 
+      // `flyerHouses` enthält zwei Sorten: "keine Werbung"-Häuser und Leads (kind === 'lead').
       const qHouses = query(collection(db, 'flyerHouses'), where('userId', '==', uid));
       const unsubHouses = onSnapshot(qHouses, (snap) => {
-        const loaded = snap.docs.map((d) => {
-          const data: any = d.data();
-          return { id: data.id, point: [data.lat, data.lng] as [number, number], createdAt: data.createdAt, userId: data.userId };
-        });
-        if (loaded.length === 0) {
+        const raw = snap.docs.map((d) => d.data() as any);
+        // Legacy-Migration nur beim allerersten komplett leeren Snapshot. Würde hier auf die
+        // *gefilterte* Länge geprüft, kämen gelöschte Häuser zurück, sobald nur noch Leads
+        // in der Collection liegen.
+        if (!housesMigratedRef.current && snap.empty) {
           const legacy = localStorage.getItem('flyerTracking_excluded');
           if (legacy) {
             try {
@@ -494,7 +531,13 @@ export function FlyerTrackingMap({ addLog }: FlyerTrackingMapProps = {}) {
             } catch {}
           }
         }
-        setExcludedHouses(loaded);
+        housesMigratedRef.current = true;
+        setExcludedHouses(
+          raw.filter(isExcludedDoc).map((d) => ({
+            id: d.id, point: [d.lat, d.lng] as [number, number], createdAt: d.createdAt, userId: d.userId,
+          }))
+        );
+        setLeads(raw.filter(isLeadDoc).map(deserializeLead));
       });
 
       // Einstellungen (Kosten/ROI/Snap) – ein Dokument je Nutzer
@@ -547,6 +590,7 @@ export function FlyerTrackingMap({ addLog }: FlyerTrackingMapProps = {}) {
       const savedHouses = localStorage.getItem('flyerTracking_excluded');
       if (savedAreas) { try { setAreas(JSON.parse(savedAreas)); } catch {} }
       if (savedHouses) { try { setExcludedHouses(JSON.parse(savedHouses)); } catch {} }
+      setLeads([]); // ohne Login keine Leads – die sind personenbezogen und nur in Firestore
       setHydrated(true);
     }
   }, [uid]);
@@ -554,6 +598,9 @@ export function FlyerTrackingMap({ addLog }: FlyerTrackingMapProps = {}) {
   // Offline-Spiegel in localStorage (auch als Backup im Online-Modus).
   // Achtung: erst nach der Hydration schreiben – sonst löscht der leere
   // Anfangs-State beim Mounten die gespeicherten Gebiete.
+  // WICHTIG: `leads` gehört hier bewusst NICHT hinein. Leads enthalten Namen und
+  // Adressen von Kunden; sie bleiben in Firestore, wo die Rules sie an den Account
+  // binden. In localStorage wären sie für jeden lesbar, der das Gerät benutzt.
   useEffect(() => {
     if (!hydrated) return;
     localStorage.setItem('flyerTracking_areas', JSON.stringify(areas));
@@ -590,6 +637,51 @@ export function FlyerTrackingMap({ addLog }: FlyerTrackingMapProps = {}) {
     setExcludedHouses((prev) => prev.filter((h) => h.id !== id));
   };
 
+  // --- Leads ---
+  // Alle Lead-Schreibvorgänge melden Fehler sichtbar. Im Projekt gibt es bereits einen
+  // Fall (userTimers), in dem Writes still fehlschlagen – das soll sich nicht wiederholen.
+  const leadWriteFailed = (e: unknown) => {
+    console.error(e);
+    setLeadError('Speichern fehlgeschlagen – bitte erneut versuchen.');
+  };
+
+  const addLead = (lead: FlyerLead): FlyerLead | null => {
+    if (!uid) { setLeadError('Zum Anlegen von Leads bitte anmelden.'); return null; }
+    const full: FlyerLead = { ...lead, userId: uid, createdAt: lead.createdAt ?? Date.now() };
+    setDoc(doc(db, 'flyerHouses', full.id), serializeLead(full, uid)).catch(leadWriteFailed);
+    setLeads((prev) => [...prev, full]);
+    return full;
+  };
+
+  const updateLeadPoint = (id: string, lat: number, lng: number) => {
+    if (uid) updateDoc(doc(db, 'flyerHouses', id), { lat, lng }).catch(leadWriteFailed);
+    setLeads((prev) => prev.map((l) => (l.id === id ? { ...l, point: [lat, lng] } : l)));
+  };
+
+  const updateLeadFields = (id: string, fields: Partial<Pick<FlyerLead, 'address' | 'name' | 'note'>>) => {
+    if (uid) updateDoc(doc(db, 'flyerHouses', id), fields).catch(leadWriteFailed);
+    setLeads((prev) => prev.map((l) => (l.id === id ? { ...l, ...fields } : l)));
+  };
+
+  const removeLead = (id: string) => {
+    if (uid) deleteDoc(doc(db, 'flyerHouses', id)).catch(leadWriteFailed);
+    setLeads((prev) => prev.filter((l) => l.id !== id));
+  };
+
+  const linkBikeToLead = (leadId: string, bikeId: string) => {
+    if (uid) updateDoc(doc(db, 'flyerHouses', leadId), { bikeIds: arrayUnion(bikeId) }).catch(leadWriteFailed);
+    setLeads((prev) => prev.map((l) =>
+      l.id === leadId ? { ...l, bikeIds: [...(l.bikeIds ?? []), bikeId].filter((v, i, a) => a.indexOf(v) === i) } : l
+    ));
+  };
+
+  const unlinkBikeFromLead = (leadId: string, bikeId: string) => {
+    if (uid) updateDoc(doc(db, 'flyerHouses', leadId), { bikeIds: arrayRemove(bikeId) }).catch(leadWriteFailed);
+    setLeads((prev) => prev.map((l) =>
+      l.id === leadId ? { ...l, bikeIds: (l.bikeIds ?? []).filter((b) => b !== bikeId) } : l
+    ));
+  };
+
   // --- KPIs ---
   const totalFlyers = areas.reduce((sum, a) => sum + a.flyerCount, 0);
   const totalAreaM2 = areas.reduce((sum, a) => sum + polygonAreaM2(a.points), 0);
@@ -600,6 +692,49 @@ export function FlyerTrackingMap({ addLog }: FlyerTrackingMapProps = {}) {
   const margin = parseFloat(marginPerCustomer) || 0;
   const revenue = customers * margin;
   const roi = totalCost > 0 ? ((revenue - totalCost) / totalCost) * 100 : null;
+
+  // --- Ausbeute je Gebiet: Leads im Polygon + daraus entstandene Räder ---
+  const areaStats = React.useMemo(() => {
+    const map: Record<string, { leads: number; bikes: number }> = {};
+    areas.forEach((a) => {
+      const inside = leads.filter((l) => pointInPolygon(l.point, a.points));
+      const bikeIds = new Set<string>();
+      inside.forEach((l) => (l.bikeIds ?? []).forEach((b) => bikeIds.add(b)));
+      map[a.id] = { leads: inside.length, bikes: bikeIds.size };
+    });
+    return map;
+  }, [areas, leads]);
+
+  const linkedBikesTotal = React.useMemo(() => {
+    const s = new Set<string>();
+    leads.forEach((l) => (l.bikeIds ?? []).forEach((b) => s.add(b)));
+    return s.size;
+  }, [leads]);
+
+  // "Flyer pro Lead" / "Flyer pro Rad" – ohne Nenner gibt es keine sinnvolle Zahl.
+  const perUnit = (flyerCount: number, n: number) => (n > 0 ? Math.round(flyerCount / n).toString() : '–');
+
+  const bikeById = React.useMemo(() => {
+    const m: Record<string, Bike> = {};
+    bikes.forEach((b) => { m[b.id] = b; });
+    return m;
+  }, [bikes]);
+
+  // Vorschläge fürs Verknüpfen: Flyer-Räder aus dem Zeitfenster um den Lead herum,
+  // die noch an keinem Lead hängen. Nächstliegendes Kaufdatum zuerst, maximal drei.
+  const suggestBikes = (lead: FlyerLead): Bike[] => {
+    const linkedAnywhere = new Set<string>();
+    leads.forEach((l) => (l.bikeIds ?? []).forEach((b) => linkedAnywhere.add(b)));
+    const base = lead.createdAt ?? Date.now();
+    const DAY = 86400000;
+    return bikes
+      .filter((b) => (b.acquisitionSource ?? 'flyer') === 'flyer' && !linkedAnywhere.has(b.id) && b.purchaseDate)
+      .map((b) => ({ bike: b, delta: (new Date(b.purchaseDate).getTime() - base) / DAY }))
+      .filter(({ delta }) => delta >= -3 && delta <= 30)
+      .sort((x, y) => Math.abs(x.delta) - Math.abs(y.delta))
+      .slice(0, 3)
+      .map(({ bike }) => bike);
+  };
 
   // --- Statistik: Flyer pro Monat (letzte 6) ---
   const monthly = Array.from({ length: 6 }).map((_, i) => subMonths(new Date(), 5 - i));
@@ -780,6 +915,199 @@ export function FlyerTrackingMap({ addLog }: FlyerTrackingMapProps = {}) {
     }
   };
 
+  // --- Lead-Formular ---
+  const openLeadModal = (lead?: FlyerLead) => {
+    setLeadError(null);
+    setLeadHint(null);
+    if (lead) {
+      setEditingLeadId(lead.id);
+      setLeadStreet(lead.address);
+      setLeadPlz(DEFAULT_PLZ);
+      setLeadName(lead.name || '');
+      setLeadNote(lead.note || '');
+    } else {
+      setEditingLeadId(null);
+      setLeadStreet('');
+      setLeadPlz(DEFAULT_PLZ);
+      setLeadName('');
+      setLeadNote('');
+    }
+    setShowLeadModal(true);
+  };
+
+  const closeLeadModal = () => {
+    setShowLeadModal(false);
+    setEditingLeadId(null);
+    setLeadBusy(false);
+    setLeadError(null);
+    setLeadHint(null);
+  };
+
+  const mapCenter = (): [number, number] => {
+    const c = mapObjRef.current?.getCenter?.();
+    return c ? [c.lat, c.lng] : [CENTER_LAT, CENTER_LNG];
+  };
+
+  const handleSaveLead = async () => {
+    const street = leadStreet.trim();
+    if (!street) { setLeadError('Bitte eine Adresse eingeben.'); return; }
+    setLeadBusy(true);
+    setLeadError(null);
+    setLeadHint(null);
+
+    // Beim Bearbeiten nur die Felder ändern – der Pin bleibt, wo er hingezogen wurde.
+    if (editingLeadId) {
+      updateLeadFields(editingLeadId, { address: street, name: leadName.trim(), note: leadNote.trim() });
+      setLeadBusy(false);
+      closeLeadModal();
+      return;
+    }
+
+    const dupe = findExistingLead(leads, street);
+    if (dupe) {
+      setLeadBusy(false);
+      setLeadError(`Zu dieser Adresse gibt es schon einen Lead${dupe.name ? ` (${dupe.name})` : ''}.`);
+      return;
+    }
+
+    let point: [number, number] | null = null;
+    try {
+      const hit = await throttledGeocode(street, leadPlz);
+      if (hit) point = [hit.lat, hit.lng];
+    } catch { /* Netzfehler → Fallback unten */ }
+
+    const created = addLead({
+      id: `lead_${Date.now()}`,
+      point: point ?? mapCenter(),
+      address: street,
+      name: leadName.trim(),
+      note: leadNote.trim(),
+      source: 'manual',
+    });
+    setLeadBusy(false);
+    if (!created) return;
+
+    if (point) {
+      setFlyTarget({ lat: point[0], lng: point[1], ts: Date.now() });
+      closeLeadModal();
+    } else {
+      // Kein Geocoding-Treffer: Lead existiert, muss aber von Hand platziert werden.
+      setLeadHint('Adresse nicht gefunden – der Pin liegt in der Kartenmitte. Bitte an die richtige Stelle ziehen.');
+      setTimeout(closeLeadModal, 2500);
+    }
+  };
+
+  // --- Lead-Import (Datei, Einfügen und dev-Eingangskorb nutzen alle diesen Weg) ---
+  const importLeads = async (
+    items: any[],
+    defaultSource: FlyerLeadSource = 'manual'
+  ): Promise<{ added: number; skipped: number; invalid: number; noCoords: number }> => {
+    let added = 0, skipped = 0, invalid = 0, noCoords = 0;
+    // Gegen den lokalen Stand *und* gegen die in diesem Lauf neu angelegten prüfen.
+    const seen: FlyerLead[] = [...leads];
+    for (const item of items) {
+      const address = String(item?.address ?? item?.adresse ?? '').trim();
+      if (!address) { invalid++; continue; }
+      if (findExistingLead(seen, address, null)) { skipped++; continue; }
+
+      let point: [number, number] | null =
+        typeof item?.lat === 'number' && typeof item?.lng === 'number' ? [item.lat, item.lng] : null;
+      if (!point) {
+        try {
+          const hit = await throttledGeocode(address, String(item?.plz ?? DEFAULT_PLZ));
+          if (hit) point = [hit.lat, hit.lng];
+        } catch { /* unten als "ohne Koordinate" behandelt */ }
+      }
+      // Dubletten, die nur über die Koordinate auffallen (andere Schreibweise der Adresse).
+      if (point && seen.some((l) => haversineM(l.point, point!) < 25)) { skipped++; continue; }
+
+      const lead: FlyerLead = {
+        id: `lead_${Date.now()}_${Math.round(Math.random() * 1e6)}`,
+        point: point ?? mapCenter(),
+        address,
+        name: String(item?.name ?? '').trim(),
+        note: String(item?.note ?? item?.notiz ?? '').trim(),
+        source: (item?.source as FlyerLeadSource) || defaultSource,
+        createdAt: typeof item?.createdAt === 'number' ? item.createdAt : Date.now(),
+      };
+      const created = addLead(lead);
+      if (!created) { invalid++; continue; }
+      seen.push(created);
+      added++;
+      if (!point) noCoords++; // angelegt, liegt aber vorerst in der Kartenmitte
+    }
+    return { added, skipped, invalid, noCoords };
+  };
+
+  const runLeadImport = async (items: any[], source: FlyerLeadSource) => {
+    setLeadImportBusy(true);
+    setLeadImportInfo('Adressen werden gesucht … (ca. 1 Sekunde pro Adresse)');
+    try {
+      const { added, skipped, invalid, noCoords } = await importLeads(items, source);
+      const parts = [`${added} übernommen`];
+      if (skipped) parts.push(`${skipped} schon vorhanden`);
+      if (noCoords) parts.push(`${noCoords} ohne Koordinate – Pin bitte setzen`);
+      if (invalid) parts.push(`${invalid} ohne Adresse übersprungen`);
+      setLeadImportInfo(parts.join(', ') + '.');
+    } catch (e) {
+      console.error(e);
+      setLeadImportInfo('Import fehlgeschlagen.');
+    } finally {
+      setLeadImportBusy(false);
+    }
+  };
+
+  const parseLeadPayload = (raw: string): any[] => {
+    const parsed = JSON.parse(raw);
+    const list = Array.isArray(parsed) ? parsed : parsed?.leads;
+    if (!Array.isArray(list)) throw new Error('Erwartet wird eine Liste oder { "leads": [...] }.');
+    return list;
+  };
+
+  const handleImportLeadsFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async () => {
+      try {
+        await runLeadImport(parseLeadPayload(reader.result as string), 'whatsapp');
+      } catch (err: any) {
+        setLeadImportInfo(`Datei nicht lesbar: ${err?.message || err}`);
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = ''; // gleiche Datei soll erneut wählbar sein
+  };
+
+  const handleImportLeadsPaste = async () => {
+    try {
+      await runLeadImport(parseLeadPayload(leadPasteText), 'whatsapp');
+      setLeadPasteText('');
+    } catch (err: any) {
+      setLeadImportInfo(`Eingabe nicht lesbar: ${err?.message || err}`);
+    }
+  };
+
+  // Dev-Eingangskorb: Der WhatsApp-Scan-Job schreibt leads-inbox.json in den Projektstamm,
+  // ein Vite-Middleware-Plugin liefert sie unter /__leads-inbox aus. `import.meta.env.DEV`
+  // sorgt dafür, dass dieser Zweig im Production-Build gar nicht erst existiert – die
+  // veröffentlichte Seite auf GitHub Pages fragt also nie nach Leads.
+  useEffect(() => {
+    if (!import.meta.env.DEV || !uid) return;
+    let cancelled = false;
+    fetch('/__leads-inbox')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => {
+        if (cancelled || !j) return;
+        const list = Array.isArray(j) ? j : j.leads;
+        if (!Array.isArray(list) || list.length === 0) return;
+        const fresh = list.filter((it: any) => !findExistingLead(leads, String(it?.address ?? '')));
+        if (fresh.length > 0) setInboxOffer(fresh);
+      })
+      .catch(() => { /* Datei fehlt oder Job lief nie – kein Fehlerfall */ });
+    return () => { cancelled = true; };
+  }, [uid, leads.length]);
+
   // --- Export ---
   const handleExportPng = async () => {
     if (!mapRef.current) return;
@@ -811,10 +1139,11 @@ export function FlyerTrackingMap({ addLog }: FlyerTrackingMapProps = {}) {
   };
 
   const handleExportCsv = () => {
-    const header = ['Name', 'Datum', 'Status', 'Flyer', 'Flaeche_m2', 'Dichte_Flyer_pro_ha', 'Dauer_min', 'Kosten_EUR'];
+    const header = ['Name', 'Datum', 'Status', 'Flyer', 'Flaeche_m2', 'Dichte_Flyer_pro_ha', 'Dauer_min', 'Kosten_EUR', 'Leads', 'Raeder', 'Flyer_pro_Lead', 'Flyer_pro_Rad'];
     const rows = areas.map((a) => {
       const m2 = polygonAreaM2(a.points);
       const dens = m2 > 0 ? a.flyerCount / (m2 / 10000) : 0;
+      const s = areaStats[a.id] || { leads: 0, bikes: 0 };
       return [
         `"${(a.name || '').replace(/"/g, '""')}"`,
         a.distributedDate || '',
@@ -824,6 +1153,10 @@ export function FlyerTrackingMap({ addLog }: FlyerTrackingMapProps = {}) {
         Math.round(dens),
         a.durationMinutes || 0,
         (a.costEuro || 0).toFixed(2),
+        s.leads,
+        s.bikes,
+        perUnit(a.flyerCount, s.leads),
+        perUnit(a.flyerCount, s.bikes),
       ].join(',');
     });
     downloadBlob([header.join(','), ...rows].join('\n'), `flyer-tracking-${todayISO()}.csv`, 'text/csv');
@@ -843,6 +1176,12 @@ export function FlyerTrackingMap({ addLog }: FlyerTrackingMapProps = {}) {
           properties: { kind: 'excludedHouse', id: h.id },
           geometry: { type: 'Point', coordinates: [h.point[1], h.point[0]] },
         })),
+        // Achtung: enthält Namen und Adressen – die Datei nicht weitergeben.
+        ...leads.map((l) => ({
+          type: 'Feature',
+          properties: { kind: LEAD_KIND, id: l.id, address: l.address, name: l.name, note: l.note, source: l.source, bikeIds: l.bikeIds ?? [], createdAt: l.createdAt },
+          geometry: { type: 'Point', coordinates: [l.point[1], l.point[0]] },
+        })),
       ],
     };
     downloadBlob(JSON.stringify(geo, null, 2), `flyer-tracking-${todayISO()}.geojson`, 'application/geo+json');
@@ -858,6 +1197,7 @@ export function FlyerTrackingMap({ addLog }: FlyerTrackingMapProps = {}) {
         if (!geo.features) throw new Error('Kein gültiges GeoJSON');
         let importedAreas = 0;
         let importedHouses = 0;
+        let importedLeads = 0;
         geo.features.forEach((f: any) => {
           if (f.geometry?.type === 'Polygon' && f.properties?.kind !== 'excludedHouse') {
             const ring: [number, number][] = f.geometry.coordinates[0].map(([lng, lat]: number[]) => [lat, lng]);
@@ -879,11 +1219,27 @@ export function FlyerTrackingMap({ addLog }: FlyerTrackingMapProps = {}) {
             importedAreas++;
           } else if (f.geometry?.type === 'Point') {
             const [lng, lat] = f.geometry.coordinates;
-            addHouse([lat, lng]);
-            importedHouses++;
+            // Ohne diese Verzweigung würden exportierte Leads beim Reimport
+            // zu "keine Werbung"-Häusern degradieren.
+            if (f.properties?.kind === LEAD_KIND) {
+              addLead({
+                id: f.properties?.id || `lead_${Date.now()}_${importedLeads}`,
+                point: [lat, lng],
+                address: f.properties?.address || '',
+                name: f.properties?.name || '',
+                note: f.properties?.note || '',
+                source: f.properties?.source || 'manual',
+                bikeIds: Array.isArray(f.properties?.bikeIds) ? f.properties.bikeIds : [],
+                createdAt: f.properties?.createdAt || Date.now(),
+              });
+              importedLeads++;
+            } else {
+              addHouse([lat, lng]);
+              importedHouses++;
+            }
           }
         });
-        alert(`Import: ${importedAreas} Gebiete, ${importedHouses} Häuser.`);
+        alert(`Import: ${importedAreas} Gebiete, ${importedHouses} Häuser, ${importedLeads} Leads.`);
       } catch (err) {
         alert('Import fehlgeschlagen: ' + (err as Error).message);
       }
@@ -1046,7 +1402,7 @@ export function FlyerTrackingMap({ addLog }: FlyerTrackingMapProps = {}) {
       </div>
 
       {/* KPI-Kacheln */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <div className={`grid grid-cols-2 ${uid ? 'md:grid-cols-5' : 'md:grid-cols-4'} gap-3`}>
         <Card className="border-emerald-500/30 bg-emerald-500/5">
           <CardContent className="p-3 text-center">
             <p className="text-[10px] text-emerald-500/70 font-bold uppercase tracking-wider">Verteilte Flyer</p>
@@ -1071,6 +1427,14 @@ export function FlyerTrackingMap({ addLog }: FlyerTrackingMapProps = {}) {
             <h3 className="text-2xl font-bold text-slate-200 mt-1">{areas.length}<span className="text-xs text-slate-500"> · {excludedHouses.length} ⊘</span></h3>
           </CardContent>
         </Card>
+        {uid && (
+          <Card className="border-rose-500/30 bg-rose-500/5">
+            <CardContent className="p-3 text-center">
+              <p className="text-[10px] text-rose-400/70 font-bold uppercase tracking-wider">Leads</p>
+              <h3 className="text-2xl font-bold text-rose-400 mt-1">{leads.length}<span className="text-xs text-slate-500"> · {linkedBikesTotal} Räder</span></h3>
+            </CardContent>
+          </Card>
+        )}
       </div>
 
       {/* Statistik & ROI Panel */}
@@ -1167,10 +1531,29 @@ export function FlyerTrackingMap({ addLog }: FlyerTrackingMapProps = {}) {
             >
               <Magnet className="w-4 h-4 mr-2" /> Andocken {snapEnabled ? 'an' : 'aus'}
             </Button>
+            <Button
+              variant="secondary"
+              onClick={() => openLeadModal()}
+              disabled={!uid}
+              title={uid ? 'Eine Anfrage als Punkt auf der Karte eintragen' : 'Anmeldung erforderlich'}
+              className={uid ? 'bg-rose-600 hover:bg-rose-700 text-white' : ''}
+            >
+              <PlusCircle className="w-4 h-4 mr-2" /> Lead hinzufügen
+            </Button>
             <div className="flex items-center gap-2 ml-auto">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => { setLeadImportInfo(null); setShowLeadImport(true); }}
+                disabled={!uid}
+                title={uid ? 'Leads aus einer JSON-Datei oder per Einfügen übernehmen' : 'Anmeldung erforderlich'}
+                className="border-slate-700"
+              >
+                <Upload className="w-4 h-4 mr-1" /> Leads
+              </Button>
               <Button variant="outline" size="sm" onClick={handleExportPng} className="border-slate-700"><Download className="w-4 h-4 mr-1" /> PNG</Button>
               <Button variant="outline" size="sm" onClick={handleExportCsv} className="border-slate-700"><Download className="w-4 h-4 mr-1" /> CSV</Button>
-              <Button variant="outline" size="sm" onClick={handleExportGeoJson} className="border-slate-700"><Download className="w-4 h-4 mr-1" /> GeoJSON</Button>
+              <Button variant="outline" size="sm" onClick={handleExportGeoJson} title="Enthält auch Leads mit Namen und Adressen – Datei nicht weitergeben." className="border-slate-700"><Download className="w-4 h-4 mr-1" /> GeoJSON</Button>
               <Button variant="outline" size="sm" onClick={() => fileInputRef.current?.click()} className="border-slate-700"><Upload className="w-4 h-4 mr-1" /> Import</Button>
               <input ref={fileInputRef} type="file" accept=".geojson,application/geo+json,application/json" onChange={handleImportGeoJson} className="hidden" />
             </div>
@@ -1179,7 +1562,8 @@ export function FlyerTrackingMap({ addLog }: FlyerTrackingMapProps = {}) {
             <span className="flex items-center"><div className="w-3 h-3 bg-emerald-500/40 border border-emerald-500 mr-2 rounded-sm" /> Verteilt (erledigt)</span>
             <span className="flex items-center"><div className="w-3 h-3 bg-blue-500/40 border border-blue-500 mr-2 rounded-sm" /> Geplant</span>
             <span className="flex items-center"><div className="w-3 h-3 bg-red-500 rounded-full mr-2" /> Keine Werbung</span>
-            {mode === 'idle' && <span className="text-xs text-slate-500">Tipp: Gebiet anklicken zum Bearbeiten</span>}
+            {uid && <span className="flex items-center"><div className="w-3 h-3 bg-rose-600 border-2 border-white rounded-full mr-2" /> Lead (Anfrage)</span>}
+            {mode === 'idle' && <span className="text-xs text-slate-500">Tipp: Gebiet anklicken zum Bearbeiten · Lead-Pin ziehen zum Korrigieren</span>}
             {mode === 'draw' && snapEnabled && <span className="flex items-center text-xs text-amber-400"><Magnet className="w-3 h-3 mr-1" /> Andocken aktiv – rastet an Nachbar-Eckpunkten ein</span>}
           </div>
         </CardContent>
@@ -1209,6 +1593,12 @@ export function FlyerTrackingMap({ addLog }: FlyerTrackingMapProps = {}) {
                     <strong>{area.name || 'Gebiet'}</strong><br />
                     {area.flyerCount.toLocaleString('de-DE')} Flyer · {formatArea(polygonAreaM2(area.points))}<br />
                     {area.distributedDate && format(parseISO(area.distributedDate), 'dd.MM.yyyy')} · {planned ? 'geplant' : 'erledigt'}<br />
+                    {uid && (
+                      <>
+                        {(areaStats[area.id]?.leads ?? 0)} Leads · {(areaStats[area.id]?.bikes ?? 0)} Räder
+                        {' · '}{perUnit(area.flyerCount, areaStats[area.id]?.leads ?? 0)} Flyer/Lead<br />
+                      </>
+                    )}
                     {mode === 'delete' ? 'Klicken zum Löschen' : 'Klicken zum Bearbeiten'}
                   </div>
                 </Tooltip>
@@ -1248,6 +1638,70 @@ export function FlyerTrackingMap({ addLog }: FlyerTrackingMapProps = {}) {
               {mode === 'delete' && <Tooltip sticky>Klicken zum Löschen</Tooltip>}
             </CircleMarker>
           ))}
+
+          {/* Leads – nur für den angemeldeten Nutzer. Ziehbar, solange nicht gezeichnet wird. */}
+          {uid && leads.map((lead) => {
+            const linked = (lead.bikeIds ?? []).map((id) => bikeById[id]).filter(Boolean);
+            const suggestions = suggestBikes(lead);
+            return (
+              <Marker
+                key={lead.id}
+                position={lead.point}
+                icon={leadIcon}
+                draggable={mode === 'idle'}
+                eventHandlers={{
+                  dragend: (e: any) => {
+                    const p = e.target.getLatLng();
+                    updateLeadPoint(lead.id, p.lat, p.lng);
+                  },
+                }}
+              >
+                <Popup>
+                  <div className="text-xs space-y-2 min-w-[190px]">
+                    <div>
+                      <strong className="text-sm">{lead.name || 'Lead'}</strong><br />
+                      <span className="text-slate-600">{lead.address}</span>
+                      {lead.note && <><br /><span className="text-slate-500 italic">{lead.note}</span></>}
+                    </div>
+
+                    <div>
+                      <div className="font-semibold text-slate-700">Räder ({linked.length})</div>
+                      {linked.length === 0 && <div className="text-slate-500">noch keins verknüpft</div>}
+                      {linked.map((b) => (
+                        <div key={b.id} className="flex items-center justify-between gap-2">
+                          <span className="truncate">{b.name}</span>
+                          <button type="button" onClick={() => unlinkBikeFromLead(lead.id, b.id)} className="text-red-600 hover:underline shrink-0">lösen</button>
+                        </div>
+                      ))}
+                    </div>
+
+                    {suggestions.length > 0 && (
+                      <div>
+                        <div className="font-semibold text-slate-700">Vorschläge</div>
+                        {suggestions.map((b) => (
+                          <div key={b.id} className="flex items-center justify-between gap-2">
+                            <span className="truncate">{b.name} <span className="text-slate-400">({b.purchaseDate})</span></span>
+                            <button type="button" onClick={() => linkBikeToLead(lead.id, b.id)} className="text-emerald-700 font-semibold hover:underline shrink-0">+</button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    <div className="flex gap-3 pt-1 border-t border-slate-200">
+                      <button type="button" onClick={() => openLeadModal(lead)} className="text-blue-600 hover:underline">Bearbeiten</button>
+                      <button
+                        type="button"
+                        onClick={() => { if (confirm(`Lead "${lead.name || lead.address}" löschen?`)) removeLead(lead.id); }}
+                        className="text-red-600 hover:underline"
+                      >
+                        Löschen
+                      </button>
+                    </div>
+                  </div>
+                </Popup>
+              </Marker>
+            );
+          })}
         </MapContainer>
 
         {mode === 'draw' && (
@@ -1308,6 +1762,24 @@ export function FlyerTrackingMap({ addLog }: FlyerTrackingMapProps = {}) {
                     <ClipboardList className="w-4 h-4 mr-2" /> Austräger-Auftrag erstellen
                   </Button>
                 )}
+
+                {/* Was das Gebiet gebracht hat */}
+                {uid && editingAreaId && (() => {
+                  const a = areas.find((x) => x.id === editingAreaId);
+                  const s = areaStats[editingAreaId] || { leads: 0, bikes: 0 };
+                  const flyer = a ? a.flyerCount : parseInt(formCount) || 0;
+                  return (
+                    <div className="rounded-lg border border-rose-500/30 bg-rose-500/5 p-3">
+                      <p className="text-[10px] font-bold uppercase tracking-wider text-rose-400/80 mb-2">Ausbeute</p>
+                      <div className="grid grid-cols-4 gap-2 text-center">
+                        <div><div className="text-lg font-bold text-rose-400">{s.leads}</div><div className="text-[10px] text-slate-400 uppercase font-bold">Leads</div></div>
+                        <div><div className="text-lg font-bold text-emerald-400">{s.bikes}</div><div className="text-[10px] text-slate-400 uppercase font-bold">Räder</div></div>
+                        <div><div className="text-lg font-bold text-slate-200">{perUnit(flyer, s.leads)}</div><div className="text-[10px] text-slate-400 uppercase font-bold">Flyer/Lead</div></div>
+                        <div><div className="text-lg font-bold text-slate-200">{perUnit(flyer, s.bikes)}</div><div className="text-[10px] text-slate-400 uppercase font-bold">Flyer/Rad</div></div>
+                      </div>
+                    </div>
+                  );
+                })()}
                 <div className="flex space-x-2 pt-1">
                   <Button variant="secondary" className="flex-1" onClick={editingAreaId ? closeModal : cancelDrawing}>Abbrechen</Button>
                   <Button variant="default" className="flex-1 bg-emerald-500 hover:bg-emerald-600 text-white" onClick={handleSaveArea}>Speichern</Button>
@@ -1318,6 +1790,112 @@ export function FlyerTrackingMap({ addLog }: FlyerTrackingMapProps = {}) {
         )}
 
       </div>
+
+      {/* Lead anlegen / bearbeiten */}
+      {showLeadModal && (
+        <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-sm z-[2000] flex items-center justify-center p-3">
+          <Card className="w-full max-w-sm border-slate-700 bg-slate-800">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-lg">{editingLeadId ? 'Lead bearbeiten' : 'Lead hinzufügen'}</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <label className="text-xs text-slate-400 flex flex-col gap-1">Adresse (Straße &amp; Hausnummer)
+                <Input
+                  autoFocus
+                  value={leadStreet}
+                  onChange={(e) => setLeadStreet(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter' && !leadBusy) handleSaveLead(); }}
+                  placeholder="Musterweg 12"
+                />
+              </label>
+              <div className="grid grid-cols-2 gap-2">
+                <label className="text-xs text-slate-400 flex flex-col gap-1">PLZ
+                  <Input value={leadPlz} onChange={(e) => setLeadPlz(e.target.value)} disabled={!!editingLeadId} />
+                </label>
+                <label className="text-xs text-slate-400 flex flex-col gap-1">Name (optional)
+                  <Input value={leadName} onChange={(e) => setLeadName(e.target.value)} placeholder="Vorname" />
+                </label>
+              </div>
+              <label className="text-xs text-slate-400 flex flex-col gap-1">Notiz (optional)
+                <Input value={leadNote} onChange={(e) => setLeadNote(e.target.value)} placeholder="z. B. Preis, Klingelschild" />
+              </label>
+
+              {editingLeadId && <p className="text-xs text-slate-500">Die Position änderst du, indem du den Pin auf der Karte verschiebst.</p>}
+              {leadError && <p className="text-xs text-red-400">{leadError}</p>}
+              {leadHint && <p className="text-xs text-amber-400">{leadHint}</p>}
+
+              <div className="flex space-x-2 pt-1">
+                <Button variant="secondary" className="flex-1" onClick={closeLeadModal}>Abbrechen</Button>
+                <Button className="flex-1 bg-rose-600 hover:bg-rose-700 text-white" onClick={handleSaveLead} disabled={leadBusy}>
+                  {leadBusy ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Suche…</> : 'Speichern'}
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* Leads importieren – Datei oder Einfügen */}
+      {showLeadImport && (
+        <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-sm z-[2000] flex items-center justify-center p-3">
+          <Card className="w-full max-w-md border-slate-700 bg-slate-800">
+            <CardHeader className="pb-3"><CardTitle className="text-lg">Leads importieren</CardTitle></CardHeader>
+            <CardContent className="space-y-3">
+              <p className="text-xs text-slate-400">
+                Erwartet wird <code className="text-slate-300">{'{ "leads": [ { "address": "…", "name": "…" } ] }'}</code> oder direkt eine Liste.
+                Fehlende Koordinaten werden gesucht (ca. 1 Sekunde pro Adresse). Bereits vorhandene Adressen werden übersprungen.
+              </p>
+              <Button variant="outline" size="sm" onClick={() => leadFileInputRef.current?.click()} disabled={leadImportBusy} className="border-slate-700 w-full">
+                <Upload className="w-4 h-4 mr-1" /> JSON-Datei wählen
+              </Button>
+              <input ref={leadFileInputRef} type="file" accept=".json,application/json" onChange={handleImportLeadsFile} className="hidden" />
+              <textarea
+                value={leadPasteText}
+                onChange={(e) => setLeadPasteText(e.target.value)}
+                placeholder='[{"address":"Musterweg 12","name":"Vorname"}]'
+                rows={5}
+                className="w-full rounded-md bg-slate-900 border border-slate-700 p-2 text-xs text-slate-200 font-mono"
+              />
+              <Button
+                size="sm"
+                onClick={handleImportLeadsPaste}
+                disabled={leadImportBusy || !leadPasteText.trim()}
+                className="w-full bg-rose-600 hover:bg-rose-700 text-white"
+              >
+                {leadImportBusy ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Import läuft…</> : 'Eingefügte Leads übernehmen'}
+              </Button>
+              {leadImportInfo && <p className="text-xs text-slate-300">{leadImportInfo}</p>}
+              <Button variant="secondary" className="w-full" onClick={() => { setShowLeadImport(false); setLeadImportInfo(null); }} disabled={leadImportBusy}>Schließen</Button>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* Eingangskorb aus dem WhatsApp-Scan (nur im lokalen Dev-Betrieb erreichbar) */}
+      {inboxOffer && inboxOffer.length > 0 && (
+        <div className="fixed bottom-4 right-4 z-[2000] w-80">
+          <Card className="border-rose-500/40 bg-slate-800 shadow-2xl">
+            <CardContent className="p-4 space-y-3">
+              <p className="text-sm font-bold text-white">{inboxOffer.length} neue Leads aus WhatsApp</p>
+              <ul className="text-xs text-slate-400 space-y-0.5 max-h-32 overflow-y-auto">
+                {inboxOffer.map((l, i) => <li key={i}>· {l.name ? `${l.name} – ` : ''}{l.address}</li>)}
+              </ul>
+              {leadImportInfo && <p className="text-xs text-slate-300">{leadImportInfo}</p>}
+              <div className="flex gap-2">
+                <Button variant="secondary" size="sm" className="flex-1" onClick={() => setInboxOffer(null)} disabled={leadImportBusy}>Später</Button>
+                <Button
+                  size="sm"
+                  className="flex-1 bg-rose-600 hover:bg-rose-700 text-white"
+                  disabled={leadImportBusy}
+                  onClick={async () => { await runLeadImport(inboxOffer, 'whatsapp'); setInboxOffer(null); }}
+                >
+                  {leadImportBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Übernehmen'}
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
 
       {/* Job-Order Modal – bewusst AUSSERHALB des Karten-Containers: sonst nimmt die
           Kartenaufnahme das offene Modal mit auf und der lange Auftrag würde auf

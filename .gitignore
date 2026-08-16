@@ -6,3 +6,9 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# Eingangskorb des WhatsApp-Scans – enthält Namen und Adressen von Kunden.
+# Darf niemals ins Repo: der Build landet auf öffentlichen GitHub Pages.
+leads-inbox.json
+leads-inbox.state.json
+leads-inbox.log

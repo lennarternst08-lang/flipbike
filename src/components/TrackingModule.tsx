@@ -12,7 +12,7 @@ import {
   Filler
 } from 'chart.js';
 import { Bar, Line } from 'react-chartjs-2';
-import { Bike, BikeStatus, Receipt, InventoryItem, GroupOrder, WorkLog } from '../types';
+import { Bike, BikeStatus, Receipt, InventoryItem, GroupOrder, WorkLog, FlyerLead } from '../types';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
@@ -22,8 +22,9 @@ import { ReceiptUploader } from './ReceiptUploader';
 import { BikeDetailsFields } from './BikeDetailsFields';
 import { emptyBikeDetails, openKaufvertragPrint } from '../lib/kaufvertrag';
 import { PUTZEN_COST, hasPutzen, togglePutzen } from '../lib/expenses';
-import { doc, deleteDoc, setDoc, getDoc } from 'firebase/firestore';
+import { doc, deleteDoc, setDoc, getDoc, getDocs, updateDoc, collection, query, where, arrayUnion } from 'firebase/firestore';
 import { db, auth } from '../firebase';
+import { DEFAULT_PLZ, deserializeLead, findExistingLead, isLeadDoc, serializeLead, throttledGeocode } from '../lib/flyerLeads';
 import { onAuthStateChanged } from 'firebase/auth';
 import { 
   format, subDays, subWeeks, subMonths, subYears, 
@@ -99,13 +100,18 @@ ChartJS.register(
 // daher wirkt eine spätere Preisänderung nur auf neu erfasste Inserate.
 const KLEINANZEIGEN_AD_COST = 2.5;
 
+// Notposition, wenn Nominatim eine Abholadresse nicht auflösen kann. Der Lead entsteht
+// trotzdem, muss auf der Flyerkarte dann aber von Hand an die richtige Stelle gezogen werden.
+const BS_FALLBACK_LAT = 52.2689;
+const BS_FALLBACK_LNG = 10.5268;
+
 interface TrackingModuleProps {
   bikes: Bike[];
   inventoryItems?: InventoryItem[];
   groupOrders?: GroupOrder[];
   receipts?: Receipt[];
   updateBike: (id: string, updates: Partial<Bike>) => void;
-  addBike: (bike: Partial<Bike>) => void;
+  addBike: (bike: Partial<Bike>) => Bike | void;
   deleteBike: (id: string) => void;
   addInventoryItem?: (item: Partial<InventoryItem>, module?: 'tracking' | 'workshop') => void;
   deleteInventoryItem: (id: string) => void;
@@ -202,6 +208,12 @@ export function TrackingModule({
     status: 'Zu reparieren',
     acquisitionSource: 'flyer'
   });
+
+  // Herkunftsadresse des Rades. Bewusst NEBEN newBikeData: addBike baut sein Bike aus einer
+  // festen Feldliste, unbekannte Felder fielen dort still unter den Tisch. Die Adresse wandert
+  // stattdessen in einen Lead auf der Flyerkarte.
+  const [newBikeAddress, setNewBikeAddress] = useState('');
+  const [newBikePlz, setNewBikePlz] = useState(DEFAULT_PLZ);
 
   // Zusatzfelder, wenn im Hinzufügen-Dialog Status "Material" gewählt ist:
   // Material landet nicht als Bike, sondern als Posten im Materialinventar.
@@ -468,9 +480,22 @@ export function TrackingModule({
       return;
     }
 
-    addBike(newBikeData);
+    const created = addBike(newBikeData);
+
+    // Herkunftsadresse → Lead auf der Flyerkarte. Läuft absichtlich im Hintergrund
+    // weiter, damit das Formular nicht auf das Geocoding warten muss.
+    const address = newBikeAddress.trim();
+    if (created && address && (newBikeData.acquisitionSource ?? 'flyer') === 'flyer') {
+      linkBikeToAddress(created, address, newBikePlz).catch((e) => {
+        console.error(e);
+        addLog?.(`Lead für "${created.name}" konnte nicht angelegt werden.`, 'tracking');
+      });
+    }
+
     setIsAddModalOpen(false);
     setShowAddDetails(false);
+    setNewBikeAddress('');
+    setNewBikePlz(DEFAULT_PLZ);
     setNewBikeData({
       name: '',
       purchaseDate: new Date().toISOString().split('T')[0],
@@ -480,6 +505,44 @@ export function TrackingModule({
       acquisitionSource: 'flyer',
       details: emptyBikeDetails()
     });
+  };
+
+  // Verknüpft ein frisch angelegtes Rad mit einem Lead: passt eine vorhandene Adresse,
+  // wird nur die bikeId ergänzt, sonst entsteht ein neuer Lead.
+  const linkBikeToAddress = async (bike: Bike, address: string, plz: string) => {
+    const uid = auth.currentUser?.uid;
+    if (!uid) return;
+
+    // Nur nach userId filtern und kind im JS prüfen – zusammengesetzte Indizes
+    // lassen sich in diesem Projekt nicht deployen.
+    const snap = await getDocs(query(collection(db, 'flyerHouses'), where('userId', '==', uid)));
+    const existingLeads = snap.docs.map((d) => d.data()).filter(isLeadDoc).map(deserializeLead);
+
+    const match = findExistingLead(existingLeads, address);
+    if (match) {
+      await updateDoc(doc(db, 'flyerHouses', match.id), { bikeIds: arrayUnion(bike.id) });
+      addLog?.(`Rad "${bike.name}" mit Lead "${match.name || match.address}" verknüpft.`, 'tracking');
+      return;
+    }
+
+    const hit = await throttledGeocode(address, plz).catch(() => null);
+    const lead: FlyerLead = {
+      id: `lead_${Date.now()}`,
+      point: hit ? [hit.lat, hit.lng] : [BS_FALLBACK_LAT, BS_FALLBACK_LNG],
+      address,
+      name: '',
+      note: '',
+      source: 'bike',
+      bikeIds: [bike.id],
+      createdAt: Date.now(),
+    };
+    await setDoc(doc(db, 'flyerHouses', lead.id), serializeLead(lead, uid));
+    addLog?.(
+      hit
+        ? `Lead "${address}" angelegt und mit "${bike.name}" verknüpft.`
+        : `Lead "${address}" angelegt, aber nicht gefunden – Pin auf der Flyer-Karte setzen.`,
+      'tracking'
+    );
   };
 
   // Flyer-Gebiete (aus dem Flyer-Tracking, lokal gespiegelt).
@@ -2981,6 +3044,27 @@ export function TrackingModule({
                       <Monitor className="w-3.5 h-3.5" /> Kleinanzeigen
                     </button>
                   </div>
+
+                  {/* Herkunftsadresse → Lead auf der Flyerkarte */}
+                  {(newBikeData.acquisitionSource ?? 'flyer') === 'flyer' && (
+                    <div className="grid grid-cols-3 gap-2 pt-1">
+                      <label className="col-span-2 text-xs text-slate-400 flex flex-col gap-1">
+                        Abholadresse (optional)
+                        <Input
+                          value={newBikeAddress}
+                          onChange={(e) => setNewBikeAddress(e.target.value)}
+                          placeholder="Musterweg 12"
+                        />
+                      </label>
+                      <label className="text-xs text-slate-400 flex flex-col gap-1">
+                        PLZ
+                        <Input value={newBikePlz} onChange={(e) => setNewBikePlz(e.target.value)} />
+                      </label>
+                      <p className="col-span-3 text-[11px] text-slate-500">
+                        Erzeugt automatisch einen Lead auf der Flyer-Karte und verknüpft ihn mit diesem Rad.
+                      </p>
+                    </div>
+                  )}
                 </div>
               )}
               {/* Fahrrad-Details für den Kaufvertrag (optional, ausklappbar) — nur für echte Fahrräder */}

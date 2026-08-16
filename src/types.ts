@@ -154,6 +154,25 @@ export interface ExcludedHouse {
   userId?: string;
 }
 
+// Woher der Lead kam: WhatsApp-Scan, von Hand angelegt oder beim Anlegen eines Rades.
+export type FlyerLeadSource = 'whatsapp' | 'manual' | 'bike';
+
+// Eine Anfrage, die auf einen Flyer hin kam – als Punkt auf der Flyerkarte.
+// Liegt (wie ExcludedHouse) in der Firestore-Collection `flyerHouses`, dort aber
+// mit `kind: 'lead'` markiert, damit beide Sorten sauber getrennt bleiben.
+// Enthält personenbezogene Daten → wird bewusst NICHT in localStorage gespiegelt.
+export interface FlyerLead {
+  id: string;
+  point: [number, number]; // [lat, lng] wie überall sonst
+  address: string;
+  name?: string;
+  note?: string;
+  source: FlyerLeadSource;
+  createdAt?: number;
+  bikeIds?: string[]; // Räder, die aus diesem Lead entstanden sind
+  userId?: string;
+}
+
 export interface FlyerHistoryEntry {
   id: string;
   ts: string;            // ISO timestamp des Log-Eintrags

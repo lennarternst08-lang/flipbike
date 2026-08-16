@@ -922,6 +922,8 @@ function App() {
       });
     }
     addLog(`Fahrrad hinzugefügt: "${newBike.name}"`, 'tracking', { type: 'add', data: newBike.id });
+    // Rückgabe, damit der Aufrufer das neue Rad direkt mit einem Flyer-Lead verknüpfen kann.
+    return newBike;
   }, [addLog]);
 
   const addTodo = useCallback((text: string, linkedBikeId?: string) => {
