@@ -12,3 +12,7 @@ coverage/
 leads-inbox.json
 leads-inbox.state.json
 leads-inbox.log
+
+# WhatsApp-Abzug: enthaelt ALLE privaten Unterhaltungen, nicht nur Geschaeftliches.
+whatsapp-context.md
+whatsapp-neu.md

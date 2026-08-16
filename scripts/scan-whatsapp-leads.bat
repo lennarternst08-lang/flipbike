@@ -1,42 +1,76 @@
 @echo off
 REM ============================================================================
 REM  WhatsApp nach neuen Flyer-Leads durchsuchen.
-REM  Wird von der Windows-Aufgabe "FlipBike-WhatsApp-Leads" taeglich gestartet.
-REM  Ergebnis: leads-inbox.json im Projektstamm (gitignoriert!).
-REM  Voraussetzung: einmalig "claude login" ausgefuehrt haben.
+REM  Wird von der Windows-Aufgabe "FlipBike-WhatsApp-Leads" bei der Anmeldung
+REM  gestartet (hoechstens ein Lauf pro Tag - der Waechter steckt im Node-Skript).
+REM
+REM  Die Bridge wird hier NICHT mehr gestartet: das erledigt die eigene Aufgabe
+REM  "FlipBike-WhatsApp-Bridge", die dauerhaft laeuft. Genau dieser Schritt war
+REM  frueher die Fehlerquelle.
+REM
+REM  Ergebnis: leads-inbox.json (gitignoriert). Voraussetzung: einmalig "claude login".
 REM ============================================================================
 
 setlocal
 set PROJECT=C:\Users\Hacker.HPGAME.000\Downloads\remix_-fahrrad-butz-ki
-set BRIDGE=C:\Users\Hacker.HPGAME.000\Desktop\whatsappkonsole.bat
+set NODE_BIN=C:\Program Files\nodejs\node.exe
 set LOG=%PROJECT%\leads-inbox.log
-set PATH=%PATH%;C:\Program Files\nodejs;%APPDATA%\npm
 
-echo. >> "%LOG%"
-echo ===== Lauf %DATE% %TIME% ===== >> "%LOG%"
-
-REM --- Bridge starten, falls sie nicht laeuft. Sie holt beim Start die
-REM     seit dem letzten Lauf aufgelaufenen Nachrichten nach. ---
-netstat -ano | findstr ":8080" | findstr "LISTENING" >nul 2>&1
-if errorlevel 1 (
-  echo Bridge nicht aktiv - wird gestartet. >> "%LOG%"
-  start "" /min cmd /c "%BRIDGE%"
-  REM 20 s Anlauf: Verbinden und Nachrichten nachladen brauchen einen Moment.
-  timeout /t 20 /nobreak >nul
-) else (
-  echo Bridge laeuft bereits. >> "%LOG%"
-)
+REM --- Wo liegt claude wirklich? ---
+REM Die Claude-Desktop-App ist eine paketierte Windows-App. Windows leitet ihre
+REM Schreibzugriffe um: was in ihrer Shell als %APPDATA%\npm erscheint, liegt in
+REM Wahrheit unter AppData\Local\Packages\Claude_*\LocalCache\Roaming\npm.
+REM Der Taskplaner laeuft ausserhalb dieses Containers und sieht nur den echten
+REM Pfad - deshalb hier zuerst der echte, dann der virtualisierte als Fallback.
+set CLAUDE_PKG=C:\Users\Hacker.HPGAME.000\AppData\Local\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe
+set CLAUDE_ALT=C:\Users\Hacker.HPGAME.000\AppData\Roaming\npm\claude.cmd
+if exist "%CLAUDE_PKG%" (set "CLAUDE_BIN=%CLAUDE_PKG%") else (set "CLAUDE_BIN=%CLAUDE_ALT%")
 
 cd /d "%PROJECT%"
 
-claude -p "Folge exakt der Anleitung in scripts/scan-whatsapp-leads.md und durchsuche WhatsApp nach neuen Flyer-Leads. Schreibe das Ergebnis nach leads-inbox.json und aktualisiere leads-inbox.state.json. Gib zum Schluss eine einzeilige Zusammenfassung aus, wie viele Leads dazugekommen sind." ^
-  --allowedTools "Read,Write,Edit,Glob,Grep,Bash(netstat:*),mcp__whatsapp__list_messages,mcp__whatsapp__list_chats,mcp__whatsapp__search_contacts,mcp__whatsapp__get_chat,mcp__whatsapp__get_contact" ^
-  >> "%LOG%" 2>&1
+echo. >> "%LOG%"
+echo ===== Lauf %DATE% %TIME% ===== >> "%LOG%"
+echo claude: %CLAUDE_BIN% >> "%LOG%"
+
+REM --- Schritt 1: Nachrichten direkt aus der Bridge-Datenbank abziehen. ---
+REM     Kein MCP, kein LLM. Exit-Code steuert, ob es ueberhaupt weitergeht.
+"%NODE_BIN%" "%PROJECT%\scripts\whatsapp-dump.mjs" >> "%LOG%" 2>&1
+set DUMP_RC=%ERRORLEVEL%
+
+REM Achtung: "if errorlevel N" trifft auf ">= N" zu -> absteigend pruefen.
+if %DUMP_RC% EQU 11 (
+  echo Ende: keine neuen Nachrichten. >> "%LOG%"
+  goto :done
+)
+if %DUMP_RC% EQU 10 (
+  echo Ende: heute schon gelaufen. >> "%LOG%"
+  goto :done
+)
+if %DUMP_RC% NEQ 0 (
+  echo FEHLER: Abzug fehlgeschlagen ^(Code %DUMP_RC%^). >> "%LOG%"
+  goto :done
+)
+
+REM --- Schritt 2: Nur den Zuwachs auswerten lassen. ---
+REM     "call" ist Pflicht: claude.cmd ist selbst ein Batch-Skript. Ohne call
+REM     uebergibt cmd die Kontrolle dorthin und kehrt NIE zurueck - Schritt 3
+REM     wuerde stillschweigend nie laufen.
+REM     allowedTools bewusst ohne Bash und ohne MCP: so kann der Lauf nicht an
+REM     einer Freigabe haengenbleiben. "< NUL" verhindert die Eingabeumleitung.
+call "%CLAUDE_BIN%" -p "Folge der Anleitung in scripts/scan-whatsapp-leads.md. Werte ausschliesslich whatsapp-neu.md aus und trage neue Leads in leads-inbox.json ein. Gib zum Schluss eine einzeilige Zusammenfassung aus." ^
+  --allowedTools "Read,Write,Edit,Glob,Grep" ^
+  < NUL >> "%LOG%" 2>&1
 
 if errorlevel 1 (
   echo FEHLER: claude wurde mit Fehlercode beendet. Ist "claude login" erledigt? >> "%LOG%"
-) else (
-  echo Lauf beendet. >> "%LOG%"
+  goto :done
 )
 
+REM --- Schritt 3: Stand erst JETZT fortschreiben. ---
+REM     Bricht Schritt 2 ab, bleibt der alte Stand stehen und dieselben
+REM     Nachrichten kommen beim naechsten Lauf wieder ins Delta.
+"%NODE_BIN%" "%PROJECT%\scripts\whatsapp-mark-scanned.mjs" >> "%LOG%" 2>&1
+echo Lauf beendet. >> "%LOG%"
+
+:done
 endlocal
