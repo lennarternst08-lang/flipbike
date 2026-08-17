@@ -24,7 +24,10 @@ cd /d "%PROJECT%"
 echo ===== Sync %DATE% %TIME% ===== > "%LOG%"
 
 REM --- Bridge am Leben halten ---
-netstat -ano | findstr ":8080" | findstr "LISTENING" >nul 2>&1
+REM     NICHT ueber "netstat | findstr LISTENING" pruefen: auf deutschem Windows
+REM     heisst der Status "ABHOEREN", der Filter trifft also nie und die Bridge
+REM     gilt immer als tot. Get-NetTCPConnection ist sprachunabhaengig.
+powershell -NoProfile -Command "if (Get-NetTCPConnection -LocalPort 8080 -State Listen -EA SilentlyContinue) { exit 0 } else { exit 1 }"
 if errorlevel 1 (
   echo Bridge war aus - wird gestartet. >> "%LOG%"
   start "" /min cmd /c "C:\Users\Hacker.HPGAME.000\Desktop\whatsappkonsole.bat"

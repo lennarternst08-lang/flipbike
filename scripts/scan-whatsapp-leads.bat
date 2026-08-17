@@ -37,7 +37,9 @@ REM     Wichtig: Ist sie tot, waechst messages.db nicht mehr und der Job meldet
 REM     faelschlich "nichts Neues", obwohl in WhatsApp Nachrichten liegen. Genau
 REM     das war der Fall, nachdem die eigene Bridge-Aufgabe noch nie gelaufen war.
 REM     Nur pruefen und ggf. starten - hier wird NICHT gewartet und kein LLM gefragt.
-netstat -ano | findstr ":8080" | findstr "LISTENING" >nul 2>&1
+REM     Sprachunabhaengig pruefen: auf deutschem Windows meldet netstat "ABHOEREN",
+REM     ein findstr auf "LISTENING" trifft also nie.
+powershell -NoProfile -Command "if (Get-NetTCPConnection -LocalPort 8080 -State Listen -EA SilentlyContinue) { exit 0 } else { exit 1 }"
 if errorlevel 1 (
   echo Bridge war aus - wird gestartet. >> "%LOG%"
   start "" /min cmd /c "C:\Users\Hacker.HPGAME.000\Desktop\whatsappkonsole.bat"
