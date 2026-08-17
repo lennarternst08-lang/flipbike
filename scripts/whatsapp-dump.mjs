@@ -34,7 +34,6 @@ const CONTEXT_FILE = path.join(PROJECT, 'whatsapp-context.md');
 const DELTA_FILE = path.join(PROJECT, 'whatsapp-neu.md');
 const STATE_FILE = path.join(PROJECT, 'leads-inbox.state.json');
 
-const CONTEXT_DAYS = 30;
 const FORCE = process.argv.includes('--force'); // Tageswaechter uebergehen
 
 // Optionale Zweitablage fuer den Kontext, damit ein Cloud-Ordner ihn mitnimmt und
@@ -173,10 +172,6 @@ function main() {
   try {
     const resolveName = buildNameResolver(msgDb, waDb);
 
-    const since = new Date();
-    since.setDate(since.getDate() - CONTEXT_DAYS);
-    const contextFrom = toDbTime(since);
-
     // deleted_at IS NULL: zurueckgezogene Nachrichten bleiben aussen vor.
     // status@broadcast sind WhatsApp-Status-Updates, keine Unterhaltung - nur Rauschen.
     const query = msgDb.prepare(`
@@ -206,39 +201,50 @@ function main() {
       chat_label: chatLabel(r.chat_jid, r.chat_name),
     }));
 
-    const contextRows = decorate(query.all(contextFrom));
+    // --- Datei 1: ALLES. Vollstaendiger Verlauf, bei jedem Lauf neu geschrieben. ---
+    const allRows = decorate(query.all('0000'));
     fs.writeFileSync(CONTEXT_FILE, renderMarkdown(
-      contextRows,
-      `WhatsApp-Kontext (letzte ${CONTEXT_DAYS} Tage)`,
-      `Stand: ${toDbTime(new Date())} · ${contextRows.length} Nachrichten.\n` +
-      `Automatisch erzeugt von scripts/whatsapp-dump.mjs. Nicht von Hand bearbeiten.\n` +
+      allRows,
+      'WhatsApp - vollstaendiger Verlauf',
+      `Stand: ${toDbTime(new Date())} · ${allRows.length} Nachrichten, alles was die Bridge hat.\n` +
+      `Bei jedem Lauf komplett neu geschrieben. Nicht von Hand bearbeiten.\n` +
+      `Fuer den heutigen Tag siehe whatsapp-neu.md.\n` +
       `Enthaelt private Unterhaltungen - gitignoriert, nicht weitergeben.`
     ), 'utf8');
 
-    // Delta: alles seit dem letzten ERFOLGREICHEN Scan. Faellt ein Lauf aus,
-    // sind dieselben Nachrichten beim naechsten Mal wieder dabei.
-    const lastScan = state.lastScan
-      ? state.lastScan.replace('T', ' ').slice(0, 19)
-      : contextFrom;
-    const deltaRows = decorate(query.all(lastScan));
+    // --- Datei 2: HEUTE. Immer der laufende Tag, damit die Datei jederzeit ---
+    // --- etwas Sinnvolles zeigt und nicht direkt nach einem Lauf leer ist.  ---
+    // Reicht der letzte Scan weiter zurueck als Mitternacht, gilt der frueheste
+    // Zeitpunkt - so faellt nichts durch, wenn ein Tag ohne Lauf verstrichen ist.
+    const lastScan = state.lastScan ? state.lastScan.replace('T', ' ').slice(0, 19) : '0000';
+    const midnight = `${todayISO()} 00:00:00`;
+    const dayFrom = lastScan < midnight ? lastScan : midnight;
 
+    const dayRows = decorate(query.all(dayFrom));
     fs.writeFileSync(DELTA_FILE, renderMarkdown(
-      deltaRows,
-      'Neue WhatsApp-Nachrichten',
-      `Zeitraum: seit ${lastScan} · ${deltaRows.length} Nachrichten.\n` +
-      `Nur dieser Zuwachs ist zu pruefen - der volle Rueckblick steht in whatsapp-context.md.`
+      dayRows,
+      'WhatsApp - neue Nachrichten',
+      `Zeitraum: seit ${dayFrom} · ${dayRows.length} Nachrichten.\n` +
+      `Normalerweise der heutige Tag; liegt der letzte Scan laenger zurueck,\n` +
+      `reicht der Zeitraum entsprechend weiter, damit nichts uebersehen wird.\n` +
+      `Der vollstaendige Verlauf steht in whatsapp-context.md.`
     ), 'utf8');
 
-    console.log(`Kontext: ${contextRows.length} Nachrichten (${CONTEXT_DAYS} Tage) -> ${path.basename(CONTEXT_FILE)}`);
-    console.log(`Neu seit ${lastScan}: ${deltaRows.length} -> ${path.basename(DELTA_FILE)}`);
+    // Ob Claude laufen muss, entscheidet der UNVERARBEITETE Rest - nicht der
+    // Tagesinhalt. Sonst liefe der Job jeden Tag erneut ueber dieselben Nachrichten.
+    const unprocessed = decorate(query.all(lastScan)).length;
+
+    console.log(`Alles : ${allRows.length} Nachrichten -> ${path.basename(CONTEXT_FILE)}`);
+    console.log(`Heute : ${dayRows.length} Nachrichten (seit ${dayFrom}) -> ${path.basename(DELTA_FILE)}`);
+    console.log(`Davon noch nicht ausgewertet: ${unprocessed}`);
 
     // Zweitablage im Cloud-Ordner, damit der Drive-Connector von claude.ai
     // live darauf zugreifen kann. Nie den Lauf scheitern lassen - der eigentliche
     // Zweck (Leads finden) haengt nicht daran.
-    copyToCloud([CONTEXT_FILE]);
+    copyToCloud([CONTEXT_FILE, DELTA_FILE]);
 
-    if (deltaRows.length === 0) {
-      console.log('Nichts Neues - Claude wird nicht gestartet.');
+    if (unprocessed === 0) {
+      console.log('Nichts Unverarbeitetes - Claude wird nicht gestartet.');
       return EXIT_NO_NEW;
     }
     return EXIT_OK;

@@ -14,13 +14,19 @@ zum Übernehmen anbietet.
 Die Nachrichten liegen bereits als Datei bereit. `scripts/whatsapp-dump.mjs` hat sie
 direkt aus der Bridge-Datenbank gezogen, bevor dieser Job gestartet wurde.
 
-- **`whatsapp-neu.md` lesen — und nur diese Datei.** Sie enthält genau den Zuwachs seit
-  dem letzten erfolgreichen Scan, meist ein paar Zeilen.
-- **`whatsapp-context.md` NICHT lesen.** Darin stehen 30 Tage aller Chats; sie ist für
-  Rückfragen von Hand gedacht, nicht für diesen Lauf. Sie zu lesen kostet unnötig Tokens.
+- **`whatsapp-neu.md` lesen — und nur diese Datei.** Sie enthält den laufenden Tag
+  (bzw. mehr, falls der letzte Scan länger zurückliegt). Der Zeitraum steht im Kopf der Datei.
+- **`whatsapp-context.md` NICHT lesen.** Das ist der *vollständige* Verlauf über alle
+  Jahre – inzwischen mehrere hundert Nachrichten. Sie ist für Rückfragen von Hand
+  gedacht, nicht für diesen Lauf, und würde unnötig Tokens kosten.
 - Es sind **keine WhatsApp-Tools nötig** und keine erlaubt. Der Job läuft ohne MCP.
 
-Ist `whatsapp-neu.md` leer oder enthält keine Nachrichten, nichts tun und das melden.
+Ist `whatsapp-neu.md` leer, nichts tun und das melden.
+
+**Wichtig:** Die Datei kann Nachrichten enthalten, die bereits bei einem früheren Lauf
+ausgewertet wurden – sie zeigt bewusst den ganzen Tag. Vor dem Anlegen eines Leads
+deshalb immer gegen `leads-inbox.json` prüfen, und in der Tagesnotiz nichts wiederholen,
+was im obersten Abschnitt schon steht.
 
 ## 2. Leads erkennen
 
