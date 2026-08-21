@@ -361,6 +361,7 @@ export function FlyerTrackingMap({ addLog, bikes = [] }: FlyerTrackingMapProps =
   // --- Leads (Anfragen auf Flyer hin) ---
   const [showLeadModal, setShowLeadModal] = useState(false);
   const [editingLeadId, setEditingLeadId] = useState<string | null>(null);
+  const [leadBikeSearch, setLeadBikeSearch] = useState(''); // Rad-Suche im Lead-Dialog
   const [leadStreet, setLeadStreet] = useState('');
   const [leadPlz, setLeadPlz] = useState(DEFAULT_PLZ);
   const [leadName, setLeadName] = useState('');
@@ -919,6 +920,7 @@ export function FlyerTrackingMap({ addLog, bikes = [] }: FlyerTrackingMapProps =
   const openLeadModal = (lead?: FlyerLead) => {
     setLeadError(null);
     setLeadHint(null);
+    setLeadBikeSearch('');
     if (lead) {
       setEditingLeadId(lead.id);
       setLeadStreet(lead.address);
@@ -938,6 +940,7 @@ export function FlyerTrackingMap({ addLog, bikes = [] }: FlyerTrackingMapProps =
   const closeLeadModal = () => {
     setShowLeadModal(false);
     setEditingLeadId(null);
+    setLeadBikeSearch('');
     setLeadBusy(false);
     setLeadError(null);
     setLeadHint(null);
@@ -1819,6 +1822,69 @@ export function FlyerTrackingMap({ addLog, bikes = [] }: FlyerTrackingMapProps =
               <label className="text-xs text-slate-400 flex flex-col gap-1">Notiz (optional)
                 <Input value={leadNote} onChange={(e) => setLeadNote(e.target.value)} placeholder="z. B. Preis, Klingelschild" />
               </label>
+
+              {/* Räder verknüpfen: Suche über alle Räder, damit ein Rad auch
+                  nachträglich schnell zugeordnet werden kann. Ohne Suchbegriff
+                  stehen die Vorschläge nach Kaufdatum bereit. */}
+              {editingLeadId && (() => {
+                const lead = leads.find((l) => l.id === editingLeadId);
+                if (!lead) return null;
+                const linkedIds = new Set(lead.bikeIds ?? []);
+                const linkedBikes = bikes.filter((b) => linkedIds.has(b.id));
+                const q = leadBikeSearch.trim().toLowerCase();
+                const elsewhere = new Map<string, string>();
+                leads.forEach((l) => {
+                  if (l.id === lead.id) return;
+                  (l.bikeIds ?? []).forEach((b) => elsewhere.set(b, l.name || l.address));
+                });
+                const results = q
+                  ? bikes
+                      .filter((b) => !linkedIds.has(b.id) && b.status !== 'Material' && b.status !== 'Infrastruktur')
+                      .filter((b) => b.name.toLowerCase().includes(q) || (b.purchaseDate || '').includes(q))
+                      .slice(0, 8)
+                  : suggestBikes(lead).filter((b) => !linkedIds.has(b.id));
+                const add = (id: string) => { linkBikeToLead(lead.id, id); setLeadBikeSearch(''); };
+                return (
+                  <div className="space-y-2 pt-2 border-t border-slate-700">
+                    <p className="text-xs font-semibold text-slate-300">Räder ({linkedBikes.length})</p>
+                    {linkedBikes.length === 0 && <p className="text-xs text-slate-500">noch keins verknüpft</p>}
+                    {linkedBikes.map((b) => (
+                      <div key={b.id} className="flex items-center justify-between gap-2 bg-slate-900/60 rounded-md px-2 py-1.5">
+                        <span className="text-xs text-slate-200 truncate">
+                          {b.name}
+                          {b.purchaseDate && <span className="text-slate-500"> · {b.purchaseDate}</span>}
+                        </span>
+                        <button type="button" onClick={() => unlinkBikeFromLead(lead.id, b.id)} className="text-xs text-red-400 hover:text-red-300 shrink-0">lösen</button>
+                      </div>
+                    ))}
+
+                    <Input
+                      value={leadBikeSearch}
+                      onChange={(e) => setLeadBikeSearch(e.target.value)}
+                      placeholder="Fahrrad suchen (Name oder Datum)…"
+                      className="bg-slate-900"
+                    />
+
+                    {!q && results.length > 0 && <p className="text-[10px] uppercase tracking-wider text-slate-500 font-bold">Vorschläge nach Kaufdatum</p>}
+                    {results.map((b) => (
+                      <button
+                        key={b.id}
+                        type="button"
+                        onClick={() => add(b.id)}
+                        className="w-full flex items-center justify-between gap-2 bg-slate-900/60 hover:bg-slate-700 rounded-md px-2 py-1.5 text-left"
+                      >
+                        <span className="text-xs text-slate-200 truncate">
+                          {b.name}
+                          {b.purchaseDate && <span className="text-slate-500"> · {b.purchaseDate}</span>}
+                          {elsewhere.has(b.id) && <span className="text-amber-400"> · bei {elsewhere.get(b.id)}</span>}
+                        </span>
+                        <PlusCircle className="w-4 h-4 text-emerald-400 shrink-0" />
+                      </button>
+                    ))}
+                    {q && results.length === 0 && <p className="text-xs text-slate-500">Kein passendes Rad gefunden.</p>}
+                  </div>
+                );
+              })()}
 
               {editingLeadId && <p className="text-xs text-slate-500">Die Position änderst du, indem du den Pin auf der Karte verschiebst.</p>}
               {leadError && <p className="text-xs text-red-400">{leadError}</p>}

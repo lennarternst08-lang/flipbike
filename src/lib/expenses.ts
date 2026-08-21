@@ -35,3 +35,44 @@ export function togglePutzen(bike: Pick<Bike, 'expenses'>): { expenses: Expense[
   };
   return { expenses: [...expenses, newExpense], added: true };
 }
+
+// Kosten pro Kleinanzeigen-Inserat. Jede Gebühr wird als eigener Expense gespeichert,
+// daher wirkt eine spätere Preisänderung nur auf neu erfasste Inserate.
+export const KLEINANZEIGEN_AD_COST = 2.5;
+export const KLEINANZEIGEN_AD_LABEL = 'Kleinanzeigen-Inserat';
+
+export function isAdExpense(e: Expense): boolean {
+  return e.category === 'kleinanzeigen';
+}
+
+export function adExpenses(bike: Pick<Bike, 'expenses'>): Expense[] {
+  return (bike.expenses || []).filter(isAdExpense);
+}
+
+// Wann die Inseratsgebühr wirtschaftlich anfällt: am Tag des Inserats, nicht am Tag
+// der Erfassung. Nur so landen nachgetragene Gebühren in der richtigen Periode.
+// listedAt fehlt bei Altbeständen – dann das Verkaufsdatum, sonst heute.
+export function adExpenseDate(bike: Pick<Bike, 'listedAt' | 'saleDate'>): string {
+  const tag = bike.listedAt || bike.saleDate;
+  return tag ? `${String(tag).slice(0, 10)}T12:00:00.000Z` : new Date().toISOString();
+}
+
+export function addAdExpense(bike: Pick<Bike, 'expenses' | 'listedAt' | 'saleDate'>): Expense[] {
+  const newExpense: Expense = {
+    id: Math.random().toString(36).substr(2, 9),
+    description: KLEINANZEIGEN_AD_LABEL,
+    amount: KLEINANZEIGEN_AD_COST,
+    date: adExpenseDate(bike),
+    category: 'kleinanzeigen',
+  };
+  return [...(bike.expenses || []), newExpense];
+}
+
+// Entfernt das zuletzt gebuchte Inserat (idempotent, wenn keins vorhanden ist).
+export function removeLastAdExpense(bike: Pick<Bike, 'expenses'>): Expense[] {
+  const expenses = bike.expenses || [];
+  const vorhanden = adExpenses(bike);
+  if (vorhanden.length === 0) return expenses;
+  const letzteId = vorhanden[vorhanden.length - 1].id;
+  return expenses.filter((e) => e.id !== letzteId);
+}

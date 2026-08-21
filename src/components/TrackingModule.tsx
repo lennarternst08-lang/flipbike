@@ -17,11 +17,14 @@ import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { formatCurrency, formatTime } from '../lib/utils';
-import { TrendingUp, Clock, Wallet, Plus, Search, Filter, ArrowUpDown, ArrowUp, ArrowDown, MoreVertical, Trash2, Edit2, Star, ChevronDown, ChevronUp, X, Check, FileCheck, Eye, EyeOff, Play, Pause, RotateCcw, Megaphone, Monitor, FileText, Wrench, Droplet, Tag, PiggyBank, CalendarClock, Repeat } from 'lucide-react';
+import { TrendingUp, Clock, Wallet, Plus, Search, Filter, ArrowUpDown, ArrowUp, ArrowDown, MoreVertical, Trash2, Edit2, Star, ChevronDown, ChevronUp, X, Check, FileCheck, Eye, EyeOff, Play, Pause, RotateCcw, Megaphone, Monitor, FileText, Wrench, Droplet, Tag, PiggyBank, CalendarClock, Repeat, MapPin } from 'lucide-react';
 import { ReceiptUploader } from './ReceiptUploader';
 import { BikeDetailsFields } from './BikeDetailsFields';
 import { emptyBikeDetails, openKaufvertragPrint } from '../lib/kaufvertrag';
-import { PUTZEN_COST, hasPutzen, togglePutzen } from '../lib/expenses';
+import {
+  PUTZEN_COST, hasPutzen, togglePutzen,
+  KLEINANZEIGEN_AD_COST, adExpenses, adExpenseDate, addAdExpense, removeLastAdExpense,
+} from '../lib/expenses';
 import { doc, deleteDoc, setDoc, getDoc, getDocs, updateDoc, collection, query, where, arrayUnion } from 'firebase/firestore';
 import { db, auth } from '../firebase';
 import { DEFAULT_PLZ, deserializeLead, findExistingLead, isLeadDoc, serializeLead, throttledGeocode } from '../lib/flyerLeads';
@@ -80,10 +83,6 @@ ChartJS.register(
   Filler,
   pointLabelsPlugin
 );
-
-// Kosten pro Kleinanzeigen-Inserat. Jede Gebühr wird als eigener Expense gespeichert,
-// daher wirkt eine spätere Preisänderung nur auf neu erfasste Inserate.
-const KLEINANZEIGEN_AD_COST = 2.5;
 
 // Notposition, wenn Nominatim eine Abholadresse nicht auflösen kann. Der Lead entsteht
 // trotzdem, muss auf der Flyerkarte dann aber von Hand an die richtige Stelle gezogen werden.
@@ -179,6 +178,12 @@ export function TrackingModule({
   const [scTimeCat, setScTimeCat] = useState<'<30' | '30-60' | '1-2' | '>2'>('1-2');
 
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+  // Adresse nachtraeglich zu einem Rad erfassen -> Lead auf der Flyerkarte
+  const [addressBike, setAddressBike] = useState<Bike | null>(null);
+  const [addressValue, setAddressValue] = useState('');
+  const [addressPlz, setAddressPlz] = useState(DEFAULT_PLZ);
+  const [addressBusy, setAddressBusy] = useState(false);
+  const [addressError, setAddressError] = useState<string | null>(null);
   const [renameBikeId, setRenameBikeId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
   const [editTimeBikeId, setEditTimeBikeId] = useState<string | null>(null);
@@ -490,6 +495,30 @@ export function TrackingModule({
       acquisitionSource: 'flyer',
       details: emptyBikeDetails()
     });
+  };
+
+  // Adresse nachträglich zu einem bestehenden Rad erfassen (Drei-Punkte-Menü).
+  // Nutzt denselben Weg wie beim Anlegen, wartet hier aber auf das Ergebnis,
+  // damit Fehler im Dialog sichtbar werden.
+  const saveBikeAddress = async () => {
+    if (!addressBike) return;
+    const address = addressValue.trim();
+    if (!address) return;
+    if (!auth.currentUser?.uid) {
+      setAddressError('Dafür musst du angemeldet sein – Leads liegen in der Cloud.');
+      return;
+    }
+    setAddressBusy(true);
+    setAddressError(null);
+    try {
+      await linkBikeToAddress(addressBike, address, addressPlz);
+      setAddressBike(null);
+    } catch (e) {
+      console.error(e);
+      setAddressError('Adresse konnte nicht gespeichert werden. Bitte erneut versuchen.');
+    } finally {
+      setAddressBusy(false);
+    }
   };
 
   // Verknüpft ein frisch angelegtes Rad mit einem Lead: passt eine vorhandene Adresse,
@@ -1747,6 +1776,21 @@ export function TrackingModule({
                                         <FileText className="w-3 h-3 mr-2" /> Kaufvertrag drucken
                                       </button>
                                     )}
+                                    {bike.status !== 'Material' && bike.status !== 'Infrastruktur' && (
+                                      <button
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setAddressBike(bike);
+                                          setAddressValue('');
+                                          setAddressPlz(DEFAULT_PLZ);
+                                          setAddressError(null);
+                                          setOpenMenuId(null);
+                                        }}
+                                        className="w-full text-left px-4 py-2 text-sm text-slate-300 hover:bg-slate-700 hover:text-white flex items-center"
+                                      >
+                                        <MapPin className="w-3 h-3 mr-2" /> Adresse hinzufügen
+                                      </button>
+                                    )}
                                     {/* Akquise-Quelle */}
                                     <div className="px-3 py-2">
                                       <p className="text-[10px] uppercase font-bold text-slate-500 tracking-wider mb-1.5">Akquise-Quelle</p>
@@ -1775,29 +1819,26 @@ export function TrackingModule({
                                     </div>
                                     {/* Kleinanzeigen-Inserate (Gebühr pro Inserat) */}
                                     {(() => {
-                                      const adExpenses = bike.expenses.filter(e => e.category === 'kleinanzeigen');
-                                      const adCount = adExpenses.length;
+                                      const adCount = adExpenses(bike).length;
+                                      // Die Gebühr wird auf den Inseratstag gebucht, nicht auf den Erfassungstag.
+                                      const buchungsTag = adExpenseDate(bike);
                                       const addAd = (e: React.MouseEvent) => {
                                         e.stopPropagation();
-                                        const newExpense = {
-                                          id: Math.random().toString(36).substr(2, 9),
-                                          description: 'Kleinanzeigen-Inserat',
-                                          amount: KLEINANZEIGEN_AD_COST,
-                                          date: new Date().toISOString(),
-                                          category: 'kleinanzeigen' as const,
-                                        };
-                                        updateBike(bike.id, { expenses: [...bike.expenses, newExpense] });
+                                        updateBike(bike.id, { expenses: addAdExpense(bike) });
                                       };
                                       const removeAd = (e: React.MouseEvent) => {
                                         e.stopPropagation();
                                         if (adCount === 0) return;
-                                        const lastAdId = adExpenses[adExpenses.length - 1].id;
-                                        updateBike(bike.id, { expenses: bike.expenses.filter(x => x.id !== lastAdId) });
+                                        updateBike(bike.id, { expenses: removeLastAdExpense(bike) });
                                       };
                                       return (
                                         <div className="px-3 py-2">
                                           <p className="text-[10px] uppercase font-bold text-slate-500 tracking-wider mb-1.5">
                                             Kleinanzeigen-Inserate <span className="text-slate-600 normal-case font-medium">({formatCurrency(KLEINANZEIGEN_AD_COST)}/St.)</span>
+                                          </p>
+                                          <p className="text-[10px] text-slate-500 mb-1.5">
+                                            gebucht auf {format(parseISO(buchungsTag), 'dd.MM.yyyy')}
+                                            <span className="text-slate-600"> ({bike.listedAt ? 'inseriert' : bike.saleDate ? 'verkauft' : 'heute'})</span>
                                           </p>
                                           <div className="flex items-center gap-2">
                                             <button
@@ -3196,6 +3237,46 @@ export function TrackingModule({
         </div>
       )}
       {/* Rename Bike Modal */}
+      {/* Adresse nachträglich erfassen – legt einen Lead an bzw. hängt das Rad
+          an einen vorhandenen Lead mit derselben Adresse */}
+      {addressBike && (
+        <div className="fixed inset-0 z-50 flex justify-center bg-slate-950/80 backdrop-blur-sm p-4 overflow-y-auto">
+          <Card className="w-full max-w-sm bg-slate-900 border-slate-800 shadow-2xl animate-in zoom-in-95 duration-200 my-auto">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2"><MapPin className="w-5 h-5 text-rose-400" /> Adresse hinzufügen</CardTitle>
+              <p className="text-sm text-slate-400 pt-1">{addressBike.name}</p>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-slate-400">Adresse (Straße &amp; Hausnummer)</label>
+                <Input
+                  value={addressValue}
+                  onChange={(e) => setAddressValue(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') saveBikeAddress(); }}
+                  placeholder="Musterweg 12"
+                  className="bg-slate-800 border-slate-700"
+                  autoFocus
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-slate-400">PLZ</label>
+                <Input value={addressPlz} onChange={(e) => setAddressPlz(e.target.value)} className="bg-slate-800 border-slate-700 max-w-[140px]" />
+              </div>
+              <p className="text-xs text-slate-500">
+                Die Adresse erscheint als Lead auf der Flyer-Karte und wird mit diesem Rad verknüpft.
+              </p>
+              {addressError && <p className="text-xs text-red-400">{addressError}</p>}
+              <div className="flex justify-end space-x-3 pt-2">
+                <Button variant="outline" onClick={() => setAddressBike(null)} disabled={addressBusy}>Abbrechen</Button>
+                <Button onClick={saveBikeAddress} disabled={addressBusy || !addressValue.trim()} className="bg-rose-600 hover:bg-rose-700 text-white">
+                  {addressBusy ? 'Suche…' : 'Speichern'}
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
       {renameBikeId && (
         <div className="fixed inset-0 z-50 flex justify-center bg-slate-950/80 backdrop-blur-sm p-4 overflow-y-auto">
           <Card className="w-full max-w-sm bg-slate-900 border-slate-800 shadow-2xl animate-in zoom-in-95 duration-200 my-auto">
