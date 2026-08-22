@@ -34,3 +34,10 @@ tagesnotiz.md
 # (Standardplatz: %USERPROFILE%\.flipbike\firebase-sa.json) - hier nur als Netz.
 firebase-sa-path.txt
 *firebase-adminsdk*.json
+
+# Adressliste der Hausverwaltungen: oeffentliche Impressumsdaten, aber gebuendelt
+# und mit Arbeitsstand drin. Der Build landet auf oeffentlichen GitHub Pages -
+# die Liste bleibt lokal. Neu erzeugen mit scripts/hausverwaltungen/scrape.mjs.
+# Fuehrender Schraegstrich: nur der Ausgabeordner im Projektstamm, nicht der
+# gleichnamige Ordner mit dem Skript unter scripts/.
+/hausverwaltungen/
