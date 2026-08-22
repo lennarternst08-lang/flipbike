@@ -3,12 +3,27 @@ import { TrackingModule } from './components/TrackingModule';
 import { WorkshopModule } from './components/WorkshopModule';
 import { DailyTodoModule } from './components/DailyTodoModule';
 import { ReceiptsModule } from './components/ReceiptsModule';
+import { ShowroomModule } from '../showroom/components/ShowroomModule';
+import {
+  listingForBikeDoc,
+  loadInquiries,
+  loadListings,
+  loadProfile,
+  loadSettings,
+  normalizeListing,
+  saveInquiries,
+  saveListings,
+  saveProfile,
+  saveSettings,
+} from '../showroom/lib/storage';
+import type { ShowroomListing } from '../showroom/types';
 import { Bike, DailyTodo, Log, ServiceRequest, Receipt, InventoryItem, GroupOrder } from './types';
 import { sanitizeDetails } from './lib/kaufvertrag';
-import { BarChart3, Wrench, CheckSquare, Download, FileText, Image, User, X, LogIn, LogOut, RotateCcw, Calendar, RefreshCw, CloudUpload } from 'lucide-react';
+import { buildAiReport, aiReportFileName } from './lib/aiReport';
+import { BarChart3, Wrench, CheckSquare, Download, FileText, Image, User, X, LogIn, LogOut, RotateCcw, Calendar, RefreshCw, CloudUpload, Store } from 'lucide-react';
 import { auth, db, signInWithGoogle, logout } from './firebase';
 import { onAuthStateChanged } from 'firebase/auth';
-import { collection, doc, setDoc, updateDoc, deleteDoc, onSnapshot, query, where, getDocs, increment, arrayUnion } from 'firebase/firestore';
+import { collection, doc, setDoc, updateDoc, deleteDoc, onSnapshot, query, where, getDoc, getDocs, increment, arrayUnion } from 'firebase/firestore';
 
 enum OperationType {
   CREATE = 'create',
@@ -351,12 +366,14 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { hasError: boole
   }
 }
 
+type TabKey = 'tracking' | 'workshop' | 'daily' | 'receipts' | 'showroom';
+
 function App() {
-  const [activeTab, setActiveTab] = useState<'tracking' | 'workshop' | 'daily' | 'receipts'>('tracking');
+  const [activeTab, setActiveTab] = useState<TabKey>('tracking');
   const [trackingScrollPos, setTrackingScrollPos] = useState(0);
   const [isTiedCapitalExpanded, setIsTiedCapitalExpanded] = useState(false);
-  
-  const handleTabChange = (tab: 'tracking' | 'workshop' | 'daily' | 'receipts') => {
+
+  const handleTabChange = (tab: TabKey) => {
     if (activeTab === 'tracking') {
       setTrackingScrollPos(window.scrollY);
     }
@@ -779,6 +796,13 @@ function App() {
     }
   }, [addLog, bikes]);
 
+  // Spiegelt eine Showroom-Anzeige in das Fahrrad-Dokument. Zusatzfelder an
+  // Rädern sind von den Firestore-Regeln erlaubt – eine eigene Collection wäre
+  // es nicht, weil die Regeln ohne Firebase-CLI nicht neu ausgerollt werden können.
+  const persistListingToBike = useCallback((bikeId: string, listing: ShowroomListing) => {
+    updateBike(bikeId, { showroom: listingForBikeDoc(listing) });
+  }, [updateBike]);
+
   const deleteBike = useCallback((id: string) => {
     const bike = bikes.find(b => b.id === id);
     if (bike) {
@@ -1124,158 +1148,31 @@ function App() {
   };
 
   const exportCSV = () => {
-    // Collect all data available
-    const activeBikes = bikes.filter(b => b.status !== 'Verkauft' && b.status !== 'Infrastruktur');
-    const soldBikes = bikes.filter(b => b.status === 'Verkauft');
-    const infraBikes = bikes.filter(b => b.status === 'Infrastruktur');
-
-    const totalInventoryCost = inventoryItems
-      .filter(item => !item.orderId)
-      .reduce((acc, item) => acc + (item.pricePerUnit * (item.initialQuantity || item.quantity)), 0);
-    const totalGroupOrderCost = groupOrders.reduce((acc, order) => acc + order.totalPrice, 0);
-    const totalRevenue = soldBikes.reduce((acc, bike) => acc + (bike.sellingPrice || 0), 0);
-
-    const profit = bikes.reduce((acc, bike) => {
-      const expenses = bike.expenses.reduce((sum, exp) => sum + exp.amount, 0);
-      let flow = -bike.purchasePrice - expenses;
-      if (bike.status === 'Verkauft') flow += (bike.sellingPrice || 0);
-      return acc + flow;
-    }, 0) - totalInventoryCost - totalGroupOrderCost;
-
-    const soldBikesProfit = soldBikes.reduce((acc, bike) => {
-      const expenses = bike.expenses.reduce((sum, exp) => sum + exp.amount, 0);
-      return acc + ((bike.sellingPrice || 0) - bike.purchasePrice - expenses);
-    }, 0);
-
-    const infTime = bikes.filter(b => b.status === 'Infrastruktur').reduce((acc, bike) => acc + bike.timeSpentSeconds, 0);
-    const timeSold = soldBikes.reduce((acc, bike) => acc + bike.timeSpentSeconds, 0) + infTime;
-    const hourlyWage = timeSold > 0 ? soldBikesProfit / (timeSold / 3600) : 0;
-    const totalTimeh = bikes.reduce((acc, bike) => acc + bike.timeSpentSeconds, 0) / 3600;
-
-    const tiedCap = activeBikes.reduce((acc, b) => acc + b.purchasePrice + b.expenses.reduce((s, e) => s + e.amount, 0), 0);
-    const infCap = infraBikes.reduce((acc, b) => acc + b.purchasePrice + b.expenses.reduce((s, e) => s + e.amount, 0), 0);
-
-    const lagerwert = inventoryItems.reduce((acc, item) => acc + (item.quantity * item.pricePerUnit), 0);
-    const standzeitBikes = bikes.filter(b => b.listedAt && b.soldAt);
-    const avgStandzeit = standzeitBikes.length > 0
-      ? standzeitBikes.reduce((acc, b) => acc + ((new Date(b.soldAt as string).getTime() - new Date(b.listedAt as string).getTime()) / 86400000), 0) / standzeitBikes.length
-      : null;
-
-    let flyerAreas = [];
-    let flyerExc = [];
-    let flyerHist = [];
+    // Die Flyer-Daten haengen nicht am App-State - die Karte haelt sie im localStorage
+    // gespiegelt (Quelle der Wahrheit ist Firestore, siehe FlyerTrackingMap).
+    let flyerAreas: any[] = [];
+    let flyerExcluded: any[] = [];
+    let flyerHistory: any[] = [];
     try {
-      flyerAreas = JSON.parse(localStorage.getItem('flyerTracking_areas') || "[]");
-      flyerExc = JSON.parse(localStorage.getItem('flyerTracking_excluded') || "[]");
-      flyerHist = JSON.parse(localStorage.getItem('flyerTracking_history') || "[]");
-    } catch(e){}
+      flyerAreas = JSON.parse(localStorage.getItem('flyerTracking_areas') || '[]');
+      flyerExcluded = JSON.parse(localStorage.getItem('flyerTracking_excluded') || '[]');
+      flyerHistory = JSON.parse(localStorage.getItem('flyerTracking_history') || '[]');
+    } catch (e) {}
 
-    // Geschäfts-Stundenlohn (alle Kosten / gesamte Zeit inkl. Flyer-Verteilzeit)
-    const flyerDurationH = Array.isArray(flyerAreas)
-      ? flyerAreas.reduce((s: number, a: any) => s + (Number(a.durationMinutes) || 0) / 60, 0)
-      : 0;
-    const geschTimeH = totalTimeh + flyerDurationH;
-    const geschHw = geschTimeH > 0 ? profit / geschTimeH : 0;
-
-    const report = {
-      _cfg: {
-         v: "1.2", pt: new Date().toISOString(), desc: "Full dataset dump for AI. Keys are minified."
-      },
-      legend: {
-         b: {
-           st: "status (Verkauft=sold, Zu reparieren=todo, Inseriert=listed)",
-           bp: "buyPrice",
-           sp: "sellPrice (realisierter Verkaufspreis, 0 wenn noch nicht verkauft)",
-           tp: "targetSellPrice (Ziel-VK / angepeilter Verkaufspreis, null wenn nicht gesetzt)",
-           exp: "expenses array (materials used from inventory or external: a=amount, d=desc, id=invId, dt=date, cat=category z.B. kleinanzeigen)",
-           tz: "timeSpentSeconds",
-           wl: "workLogs (einzelne Arbeitszeiten): dt=timestamp, s=durationSeconds, n=note (frei beschriftbare Notiz zur Zeit)",
-           rcv: "receivedAt (Eingang)", lst: "listedAt (inseriert am)", sld: "soldAt (verkauft am)",
-           acq: "acquisitionSource: flyer=Flyer-Akquise, kleinanzeigen=Kleinanzeigen, null=unbekannt"
-         },
-         inv: { iq: "initialQuantity", q: "currentQuantity", c: "pricePerUnit", oId: "Group order id" },
-         go: { c: "totalCost", n: "name", dt: "date" },
-         svcReq: { iss: "issue", drop: "dropoff", st: "status" },
-         logs: "Aktivitäts-/Zeitprotokoll (ts=timestamp ms, m=message inkl. 'Flyer verteilen'-Einträgen & Notizen, mod=module)",
-         flyerHistory: { ts: "log timestamp ISO", act: "add|edit|delete", fc: "flyerCount", dt: "distributedDate", st: "status (geplant/erledigt)" }
-      },
-      stats: {
-        rev: Math.round(totalRevenue*100)/100,
-        prof: Math.round(profit*100)/100,
-        hw: Math.round(hourlyWage*100)/100,
-        geschHw: Math.round(geschHw*100)/100,
-        tt: Math.round(totalTimeh*100)/100,
-        capActiv: Math.round(tiedCap*100)/100,
-        capInf: Math.round(infCap*100)/100,
-        lagerwert: Math.round(lagerwert*100)/100,
-        avgStandzeit: avgStandzeit !== null ? Math.round(avgStandzeit*10)/10 : null,
-        counts: { sold: soldBikes.length, active: activeBikes.length, all: bikes.length },
-        kleinanzeigen: (() => {
-          const kaExp = bikes.flatMap(b => b.expenses.filter(e => e.category === 'kleinanzeigen'));
-          return { ads: kaExp.length, cost: Math.round(kaExp.reduce((s, e) => s + e.amount, 0) * 100) / 100 };
-        })()
-      },
-      bikes: bikes.map(b => ({
-        id: b.id, name: b.name, st: b.status,
-        bp: b.purchasePrice, sp: b.sellingPrice || 0,
-        tp: b.targetSellingPrice ?? null,
-        exp: b.expenses.map(e => ({ a: e.amount, d: e.description, dt: e.date, id: e.sourceInventoryId, cat: e.category })),
-        tz: b.timeSpentSeconds,
-        wl: (b.workLogs || []).map(w => ({ dt: w.timestamp, s: w.durationSeconds, n: w.note && w.note.trim() ? w.note : undefined })),
-        rcv: b.receivedAt || null,
-        lst: b.listedAt || null,
-        sld: b.soldAt || null,
-        acq: b.acquisitionSource || null,
-        notes: b.notes,
-        todos: b.checklist.filter(c => !c.completed).map(c => c.text)
-      })),
-      inv: inventoryItems.map(i => ({
-        id: i.id, cat: i.category, name: i.name,
-        iq: i.initialQuantity || i.quantity, q: i.quantity,
-        c: i.pricePerUnit, oId: i.orderId
-      })),
-      gOrders: groupOrders.map(o => ({
-        id: o.id, name: o.name, dt: o.date, c: o.totalPrice
-      })),
-      svcReq: serviceRequests.map(s => ({
-        name: s.name, iss: s.issue, drop: s.dropoffTime, st: s.status, dt: s.id
-      })),
-      sysTodos: dailyTodos.map(d => ({
-        t: d.text, c: d.completed
-      })),
-      logs: logs.map(l => ({ ts: l.timestamp, m: l.message, mod: l.module })),
-      flyer: {
-        areas: flyerAreas.length,
-        distd: flyerAreas.reduce((sum: number, a: any) => sum + (a.flyerCount || 0), 0),
-        durationMin: Math.round(flyerDurationH * 60), // Gesamte Flyer-Verteilzeit in Minuten (fließt in geschHw)
-        excHouses: flyerExc.length,
-        byStatus: {
-          erledigt: flyerAreas.filter((a: any) => a.status === 'erledigt' || !a.status).length,
-          geplant: flyerAreas.filter((a: any) => a.status === 'geplant').length,
-        },
-        bikesFromFlyer: bikes.filter(b => b.acquisitionSource === 'flyer').length,
-        bikesFromKleinanzeigen: bikes.filter(b => b.acquisitionSource === 'kleinanzeigen').length,
-        areaDetails: flyerAreas.map((a: any) => ({
-          name: a.name || '',
-          flyerCount: a.flyerCount || 0,
-          date: a.distributedDate || null,
-          status: a.status || 'erledigt',
-          durationMin: a.durationMinutes || 0,
-          note: a.note || '',
-        })),
-        history: flyerHist.map((h: any) => ({
-          ts: h.ts, act: h.action, name: h.name, fc: h.flyerCount, dt: h.date || null, st: h.status || null
-        }))
-      }
-    };
+    // Gebaut wird in src/lib/aiReport.ts - dieselbe Funktion nutzt der Tageslauf
+    // (scripts/ai-report-dump.mts), damit Knopf und Job nie auseinanderlaufen.
+    const report = buildAiReport({
+      bikes, inventoryItems, groupOrders, serviceRequests, dailyTodos, logs,
+      flyerAreas, flyerExcluded, flyerHistory,
+    });
 
     // Minifiziert (kein Pretty-Print) = token-effizienter & einfacher maschinell zu parsen.
-    // Die "legend" oben dokumentiert alle Kurz-Keys, daher bleibt es trotzdem eindeutig lesbar.
+    // Die "legend" im Report dokumentiert alle Kurz-Keys, daher bleibt es lesbar.
     const str = JSON.stringify(report);
     const url = URL.createObjectURL(new Blob([str], { type: 'application/json' }));
     const a = document.createElement('a');
     a.href = url;
-    a.download = `ai_report_v1.2_${new Date().toISOString().split('T')[0]}.json`;
+    a.download = aiReportFileName();
     a.click();
     setIsProfileMenuOpen(false);
   };
@@ -1346,14 +1243,64 @@ function App() {
     setIsProfileMenuOpen(false);
   };
 
-  const exportBackup = () => {
+  const exportBackup = async () => {
+    // Die Flyer-Daten hängen nicht am App-State – die Karte abonniert sie selbst.
+    // Fürs Backup werden sie roh aus Firestore gelesen (inkl. pointsJson), damit der
+    // Import sie 1:1 zurückschreiben kann, ohne die Serialisierung der Karte zu kennen.
+    const uid = auth.currentUser?.uid;
+    const flyer: Record<string, any> = {};
+    const fehlend: string[] = [];
+
+    if (uid) {
+      for (const name of ['flyerAreas', 'flyerHouses', 'flyerHistory']) {
+        try {
+          const snap = await getDocs(query(collection(db, name), where('userId', '==', uid)));
+          flyer[name] = snap.docs.map(d => ({ ...d.data(), id: d.id }));
+        } catch (e) {
+          console.error(`Backup: ${name} konnte nicht gelesen werden`, e);
+          fehlend.push(name);
+        }
+      }
+      try {
+        const snap = await getDoc(doc(db, 'flyerSettings', uid));
+        flyer.flyerSettings = snap.exists() ? snap.data() : null;
+      } catch (e) {
+        console.error('Backup: flyerSettings konnte nicht gelesen werden', e);
+        fehlend.push('flyerSettings');
+      }
+    } else {
+      // Ohne Login liegen die Flyer-Gebiete nur als localStorage-Spiegel vor, und zwar
+      // in einer anderen Form als in Firestore. Sie hier mitzuschreiben würde beim
+      // Import ein Mischformat erzeugen – deshalb bleiben sie draußen.
+      fehlend.push('flyerAreas', 'flyerHouses', 'flyerHistory', 'flyerSettings');
+    }
+
     const backupData = {
+      version: 2,
       bikes,
       dailyTodos,
       logs,
+      serviceRequests,
+      receipts,
+      inventoryItems,
+      groupOrders,
+      ...flyer,
+      // Der Showroom liegt nur im Browser (die Firestore-Regeln lassen keine
+      // eigene Collection zu) – ohne ihn wäre ein Backup unvollständig.
+      showroom: {
+        listings: loadListings(),
+        inquiries: loadInquiries(),
+        profile: loadProfile(),
+        settings: loadSettings(),
+      },
       activeWorkshopBikeId,
-      timestamp: Date.now()
+      timestamp: Date.now(),
+      ...(fehlend.length > 0 ? { _unvollstaendig: fehlend } : {})
     };
+    if (fehlend.length > 0) {
+      alert(`Achtung: Diese Daten fehlen im Backup: ${fehlend.join(', ')}.` +
+        (uid ? '' : '\n\nGrund: nicht eingeloggt. Für ein vollständiges Backup erst anmelden.'));
+    }
     const jsonContent = JSON.stringify(backupData, null, 2);
     const blob = new Blob([jsonContent], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -1401,31 +1348,66 @@ function App() {
         const backupData = JSON.parse(content);
         
         if (user) {
-          // Upload to Firestore
-          if (backupData.bikes) {
-            for (const bike of backupData.bikes) {
-              await setDoc(doc(db, 'bikes', bike.id), { ...bike, userId: user.uid });
+          // Upload to Firestore. Ältere Backups (vor version 2) haben nur bikes/todos/logs –
+          // fehlende Felder werden übersprungen, nichts wird gelöscht.
+          const restore = async (rows: any[] | undefined, collectionName: string) => {
+            for (const row of rows || []) {
+              await setDoc(doc(db, collectionName, row.id), { ...row, userId: user.uid });
             }
-          }
-          if (backupData.dailyTodos) {
-            for (const todo of backupData.dailyTodos) {
-              await setDoc(doc(db, 'todos', todo.id), { ...todo, userId: user.uid });
-            }
-          }
-          if (backupData.logs) {
-            for (const log of backupData.logs) {
-              await setDoc(doc(db, 'logs', log.id), { ...log, userId: user.uid });
-            }
+          };
+          await restore(backupData.bikes, 'bikes');
+          await restore(backupData.dailyTodos, 'todos');
+          await restore(backupData.logs, 'logs');
+          await restore(backupData.serviceRequests, 'serviceRequests');
+          await restore(backupData.receipts, 'receipts');
+          await restore(backupData.inventoryItems, 'inventoryItems');
+          await restore(backupData.groupOrders, 'orders');
+          await restore(backupData.flyerAreas, 'flyerAreas');
+          await restore(backupData.flyerHouses, 'flyerHouses');
+          await restore(backupData.flyerHistory, 'flyerHistory');
+          if (backupData.flyerSettings) {
+            await setDoc(doc(db, 'flyerSettings', user.uid), { ...backupData.flyerSettings, userId: user.uid }, { merge: true });
           }
         } else {
           if (backupData.bikes) setBikes(backupData.bikes);
           if (backupData.dailyTodos) setDailyTodos(backupData.dailyTodos);
           if (backupData.logs) setLogs(backupData.logs);
+          if (backupData.serviceRequests) setServiceRequests(backupData.serviceRequests);
+          if (backupData.receipts) setReceipts(backupData.receipts);
+          if (backupData.inventoryItems) setInventoryItems(backupData.inventoryItems);
+          if (backupData.groupOrders) setGroupOrders(backupData.groupOrders);
           if (backupData.activeWorkshopBikeId !== undefined) setActiveWorkshopBikeId(backupData.activeWorkshopBikeId);
+          // Flyer-Daten liegen im Firestore-Format vor und werden nur eingeloggt zurückgeschrieben.
         }
-        
-        addLog('Backup erfolgreich wiederhergestellt', 'system');
-        alert('Backup erfolgreich wiederhergestellt!');
+
+        // Der Showroom wird immer lokal zurückgeschrieben – dort liegt er auch sonst.
+        // Sichtbar wird er erst beim nächsten Öffnen des Reiters, weil das Modul
+        // seinen Zustand beim Einhängen liest.
+        if (backupData.showroom) {
+          const sr = backupData.showroom;
+          if (Array.isArray(sr.listings)) saveListings(sr.listings.map(normalizeListing));
+          if (Array.isArray(sr.inquiries)) saveInquiries(sr.inquiries);
+          if (sr.profile) saveProfile(sr.profile);
+          if (sr.settings) saveSettings(sr.settings);
+        }
+
+
+        // Zeigt an, was tatsächlich in der Datei stand – ein altes Backup enthält
+        // z. B. keine Flyer-Gebiete, die bleiben dann einfach wie sie sind.
+        const wiederhergestellt = ([
+          ['Räder', backupData.bikes], ['Todos', backupData.dailyTodos], ['Logs', backupData.logs],
+          ['Serviceaufträge', backupData.serviceRequests], ['Belege', backupData.receipts],
+          ['Lager', backupData.inventoryItems], ['Bestellungen', backupData.groupOrders],
+          ['Flyer-Gebiete', backupData.flyerAreas], ['Flyer-Häuser', backupData.flyerHouses],
+          ['Flyer-Historie', backupData.flyerHistory],
+          ['Showroom-Anzeigen', backupData.showroom?.listings],
+          ['Showroom-Anfragen', backupData.showroom?.inquiries],
+        ] as [string, any[] | undefined][])
+          .filter(([, rows]) => Array.isArray(rows))
+          .map(([label, rows]) => `${label}: ${rows!.length}`);
+
+        addLog(`Backup wiederhergestellt (${wiederhergestellt.join(', ')})`, 'system');
+        alert('Backup erfolgreich wiederhergestellt!\n\n' + wiederhergestellt.join('\n'));
       } catch (error) {
         console.error('Fehler beim Importieren des Backups', error);
         alert('Fehler beim Importieren des Backups. Die Datei ist möglicherweise beschädigt.');
@@ -1473,11 +1455,12 @@ function App() {
             { key: 'workshop', label: 'WERKSTATT', Icon: Wrench },
             { key: 'daily', label: 'DAILY', Icon: CheckSquare },
             { key: 'receipts', label: 'BELEGE', Icon: FileText },
+            { key: 'showroom', label: 'SHOWROOM', Icon: Store },
           ] as const).map(({ key, label, Icon }) => (
             <button
               key={key}
               onClick={() => handleTabChange(key)}
-              className={`flex items-center gap-2 px-5 py-2 rounded-lg text-sm font-semibold tracking-wide transition-all duration-200 ${
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold tracking-wide transition-all duration-200 ${
                 activeTab === key
                   ? 'bg-slate-700/80 text-white shadow-sm ring-1 ring-orange-500/20'
                   : 'text-slate-400 hover:text-slate-100 hover:bg-slate-700/40'
@@ -1645,6 +1628,13 @@ function App() {
               groupOrders={groupOrders}
               inventoryItems={inventoryItems}
             />
+          ) : activeTab === 'showroom' ? (
+            <ShowroomModule
+              bikes={bikes}
+              onNavigateToWorkshop={navigateToWorkshopBike}
+              addLog={addLog}
+              onPersistListingToBike={persistListingToBike}
+            />
           ) : (
             <DailyTodoModule 
               todos={dailyTodos} 
@@ -1754,6 +1744,7 @@ function App() {
             { key: 'workshop', label: 'WERKSTATT', Icon: Wrench },
             { key: 'daily', label: 'DAILY', Icon: Calendar },
             { key: 'receipts', label: 'BELEGE', Icon: FileText },
+            { key: 'showroom', label: 'SHOWROOM', Icon: Store },
           ] as const).map(({ key, label, Icon }) => {
             const active = activeTab === key;
             return (
@@ -1765,7 +1756,8 @@ function App() {
                 }`}
               >
                 <Icon className={`w-[22px] h-[22px] mb-0.5 ${active ? 'fill-orange-500/15' : ''}`} />
-                <span className="text-[10px] font-bold tracking-wide">{label}</span>
+                {/* Fünf Reiter passen nur ohne zusätzliche Laufweite auf 360px-Displays. */}
+                <span className="text-[10px] font-bold tracking-tight">{label}</span>
               </button>
             );
           })}

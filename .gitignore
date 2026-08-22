@@ -12,10 +12,25 @@ coverage/
 leads-inbox.json
 leads-inbox.state.json
 leads-inbox.log
+tageslauf.log
 
 # WhatsApp-Abzug: enthaelt ALLE privaten Unterhaltungen, nicht nur Geschaeftliches.
 whatsapp-context.md
 whatsapp-neu.md
+# alter Name der Tagesnotiz - heisst jetzt tagesnotiz.md (weiter unten)
 whatsapp-zusammenfassung.md
 whatsapp-sync.log
 whatsapp-export-target.txt
+
+# Tageslauf: Betriebsdaten aus Firestore. Enthalten Kundennamen (Serviceanfragen)
+# und den kompletten Geschaeftsstand - der Build landet auf oeffentlichen GitHub Pages.
+ai-report-latest.json
+ai-report-prev.json
+ai-report-neu.md
+ai-report-archiv/
+tagesnotiz.md
+
+# Dienstkonto-Schluessel fuer Firestore. Gehoert eigentlich gar nicht ins Projekt
+# (Standardplatz: %USERPROFILE%\.flipbike\firebase-sa.json) - hier nur als Netz.
+firebase-sa-path.txt
+*firebase-adminsdk*.json

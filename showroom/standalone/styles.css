@@ -1,0 +1,30 @@
+/* ==========================================================================
+   Eigenständige Website – Rahmen um den Showroom
+   --------------------------------------------------------------------------
+   Das Aussehen des Showrooms steckt vollständig in ../theme.css; die wird von
+   ShowroomModule selbst geladen. Hier steht nur, was die Website drumherum
+   braucht: Tailwind (für die Layout-Klassen der Komponenten) und die Seite als
+   Ganzes statt als Karte in einem Reiter.
+   ========================================================================== */
+
+@import "tailwindcss";
+
+/* Tailwind sucht seine Klassen von der Projektwurzel aus – die ist hier der
+   Ordner `standalone/`. Die Komponenten liegen aber eine Ebene höher, ohne
+   diese Zeile bliebe die Seite also ohne jedes Layout. */
+@source "../components";
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+  background-color: #0a0908;
+  color: #ece6df;
+}
+
+/* In der App schwebt der Showroom als abgerundete Karte im Reiter. Als eigene
+   Website soll er stattdessen die volle Seite füllen. */
+#root > .sr-root {
+  border-radius: 0;
+  min-height: 100vh;
+}

@@ -1,3 +1,5 @@
+import type { ShowroomListing } from '../showroom/types';
+
 export type BikeStatus = 'Zu reparieren' | 'Inseriert' | 'Verkauft' | 'Infrastruktur' | 'Material';
 
 export interface Expense {
@@ -124,6 +126,13 @@ export interface Bike {
   notes: string;
   photos: string[];
   details?: BikeDetails; // Fahrrad-Stammdaten für den Kaufvertrag
+  /**
+   * Showroom-Anzeige zu diesem Rad. Liegt am Fahrrad-Dokument, weil die
+   * Firestore-Regeln nicht neu ausgerollt werden können und `isValidBike`
+   * Zusatzfelder erlaubt (hasAll, nicht hasOnly). Die Fotos bleiben in
+   * `photos` – im Anzeigen-Objekt ist `photos` deshalb immer leer.
+   */
+  showroom?: ShowroomListing;
   hiddenInWorkshop?: boolean;
   userId?: string;
   isStandalone?: boolean;

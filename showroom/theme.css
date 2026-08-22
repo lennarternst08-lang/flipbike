@@ -1,0 +1,470 @@
+/* ==========================================================================
+   Showroom – eigenes Erscheinungsbild
+   --------------------------------------------------------------------------
+   Dunkles, geöltes Holz statt des kühlen Blaugrau der Werkstatt-App: der
+   Showroom soll sich anfassen wie ein Laden, nicht wie ein Werkzeug.
+   Alles ist unter `.sr-root` gekapselt, damit nichts in die übrigen Reiter
+   ausläuft. Die Akzentfarbe kommt zur Laufzeit aus dem Verkäufer-Profil
+   (`--sr-accent` wird per style-Attribut gesetzt).
+   ========================================================================== */
+
+.sr-root {
+  /* Grundtöne: fast schwarz, aber warm – nicht blaustichig. */
+  --sr-ink: #0a0908;
+  --sr-ink-2: #121010;
+  --sr-ink-3: #1a1716;
+  --sr-line: #2a2422;
+  --sr-line-soft: #221d1c;
+
+  --sr-text: #ece6df;
+  --sr-muted: #a1968c;
+  --sr-faint: #6f645c;
+
+  /* Messing als Standard-Akzent; wird vom Profil überschrieben. */
+  --sr-accent: #c8934a;
+  --sr-accent-soft: color-mix(in srgb, var(--sr-accent) 22%, transparent);
+  --sr-accent-line: color-mix(in srgb, var(--sr-accent) 45%, transparent);
+  --sr-accent-ink: color-mix(in srgb, var(--sr-accent) 88%, #ffffff 12%);
+
+  --sr-good: #6fbf8b;
+  --sr-warn: #d9a441;
+  --sr-bad: #d4695f;
+
+  --sr-radius: 16px;
+  --sr-shadow: 0 18px 45px -22px rgba(0, 0, 0, 0.95);
+
+  color: var(--sr-text);
+  background-color: var(--sr-ink);
+  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* --- Holzgrund ---------------------------------------------------------- */
+/* Drei überlagerte Verläufe: grobe Maserung, feine Faser, warmes Licht von
+   oben. Ergibt in fast Schwarz die Anmutung von geöltem Räuchereiche-Furnier,
+   ohne ein einziges Bild laden zu müssen. */
+.sr-wood {
+  background-color: var(--sr-ink);
+  background-image:
+    repeating-linear-gradient(
+      92deg,
+      rgba(255, 255, 255, 0.016) 0px,
+      rgba(255, 255, 255, 0.016) 1px,
+      transparent 1px,
+      transparent 4px,
+      rgba(0, 0, 0, 0.28) 4px,
+      rgba(0, 0, 0, 0.28) 6px,
+      transparent 6px,
+      transparent 13px
+    ),
+    repeating-linear-gradient(
+      88deg,
+      rgba(120, 84, 52, 0.05) 0px,
+      rgba(120, 84, 52, 0.05) 2px,
+      transparent 2px,
+      transparent 27px,
+      rgba(60, 40, 24, 0.09) 27px,
+      rgba(60, 40, 24, 0.09) 30px,
+      transparent 30px,
+      transparent 71px
+    ),
+    radial-gradient(120% 80% at 50% -10%, rgba(200, 147, 74, 0.11), transparent 60%),
+    linear-gradient(180deg, #14100e 0%, #0a0908 55%, #070605 100%);
+  background-attachment: scroll;
+}
+
+/* Sanfte Abdunklung zu den Rändern – lenkt den Blick auf die Räder. */
+.sr-vignette::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(90% 70% at 50% 25%, transparent 40%, rgba(0, 0, 0, 0.55) 100%);
+}
+
+/* --- Flächen ------------------------------------------------------------ */
+
+.sr-panel {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.045) 0%, rgba(255, 255, 255, 0) 42%),
+    linear-gradient(180deg, var(--sr-ink-3) 0%, var(--sr-ink-2) 100%);
+  border: 1px solid var(--sr-line);
+  border-radius: var(--sr-radius);
+  box-shadow: var(--sr-shadow), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+.sr-panel-flat {
+  background: var(--sr-ink-2);
+  border: 1px solid var(--sr-line-soft);
+  border-radius: 12px;
+}
+
+.sr-inset {
+  background: linear-gradient(180deg, #0b0a09 0%, #100e0d 100%);
+  border: 1px solid var(--sr-line-soft);
+  border-radius: 12px;
+  box-shadow: inset 0 2px 10px rgba(0, 0, 0, 0.6);
+}
+
+/* Dünne Messing-Linie als Trenner – ersetzt harte Rahmen. */
+.sr-rule {
+  height: 1px;
+  border: 0;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--sr-accent-line) 20%,
+    var(--sr-accent-line) 80%,
+    transparent
+  );
+}
+
+/* --- Typografie --------------------------------------------------------- */
+
+.sr-display {
+  font-family: 'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, ui-serif, serif;
+  letter-spacing: -0.015em;
+}
+
+.sr-eyebrow {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--sr-faint);
+}
+
+.sr-brass {
+  background: linear-gradient(
+    180deg,
+    var(--sr-accent-ink) 0%,
+    var(--sr-accent) 55%,
+    color-mix(in srgb, var(--sr-accent) 70%, #000000) 100%
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* --- Bedienelemente ----------------------------------------------------- */
+
+.sr-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px 18px;
+  border-radius: 11px;
+  font-size: 14px;
+  font-weight: 600;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.2s ease, background-color 0.2s ease,
+    border-color 0.2s ease, color 0.2s ease;
+}
+
+.sr-btn:active {
+  transform: translateY(1px) scale(0.99);
+}
+
+.sr-btn:focus-visible {
+  outline: 2px solid var(--sr-accent);
+  outline-offset: 2px;
+}
+
+.sr-btn-primary {
+  color: #17110a;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--sr-accent) 82%, #ffffff) 0%,
+    var(--sr-accent) 48%,
+    color-mix(in srgb, var(--sr-accent) 72%, #000000) 100%
+  );
+  border-color: color-mix(in srgb, var(--sr-accent) 60%, #000000);
+  box-shadow: 0 10px 24px -12px color-mix(in srgb, var(--sr-accent) 70%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.4);
+}
+
+.sr-btn-primary:hover {
+  box-shadow: 0 14px 30px -12px color-mix(in srgb, var(--sr-accent) 85%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.5);
+}
+
+.sr-btn-ghost {
+  color: var(--sr-text);
+  background: rgba(255, 255, 255, 0.035);
+  border-color: var(--sr-line);
+}
+
+.sr-btn-ghost:hover {
+  background: rgba(255, 255, 255, 0.075);
+  border-color: var(--sr-accent-line);
+}
+
+.sr-btn-quiet {
+  color: var(--sr-muted);
+  background: transparent;
+  border-color: transparent;
+}
+
+.sr-btn-quiet:hover {
+  color: var(--sr-text);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.sr-btn-danger {
+  color: var(--sr-bad);
+  background: rgba(212, 105, 95, 0.09);
+  border-color: rgba(212, 105, 95, 0.3);
+}
+
+.sr-btn-danger:hover {
+  background: rgba(212, 105, 95, 0.16);
+}
+
+.sr-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* --- Eingabefelder ------------------------------------------------------ */
+
+.sr-input,
+.sr-select,
+.sr-textarea {
+  width: 100%;
+  background: #0c0b0a;
+  border: 1px solid var(--sr-line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  color: var(--sr-text);
+  font-size: 14px;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.sr-input::placeholder,
+.sr-textarea::placeholder {
+  color: var(--sr-faint);
+}
+
+.sr-input:focus,
+.sr-select:focus,
+.sr-textarea:focus {
+  outline: none;
+  border-color: var(--sr-accent-line);
+  box-shadow: 0 0 0 3px var(--sr-accent-soft);
+}
+
+.sr-textarea {
+  min-height: 120px;
+  resize: vertical;
+  line-height: 1.6;
+}
+
+.sr-label {
+  display: block;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--sr-faint);
+  margin-bottom: 6px;
+}
+
+/* --- Etiketten ---------------------------------------------------------- */
+
+.sr-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--sr-line);
+  color: var(--sr-muted);
+}
+
+.sr-chip-accent {
+  background: var(--sr-accent-soft);
+  border-color: var(--sr-accent-line);
+  color: var(--sr-accent-ink);
+}
+
+.sr-chip-good {
+  background: rgba(111, 191, 139, 0.12);
+  border-color: rgba(111, 191, 139, 0.32);
+  color: var(--sr-good);
+}
+
+.sr-chip-warn {
+  background: rgba(217, 164, 65, 0.12);
+  border-color: rgba(217, 164, 65, 0.32);
+  color: var(--sr-warn);
+}
+
+.sr-chip-bad {
+  background: rgba(212, 105, 95, 0.12);
+  border-color: rgba(212, 105, 95, 0.32);
+  color: var(--sr-bad);
+}
+
+/* --- Karten mit räumlicher Wirkung -------------------------------------- */
+/* Kein echtes 3D-Modell, aber echte Tiefe: die Karte kippt leicht zum Zeiger
+   und das Bild hebt sich vom Hintergrund ab. */
+
+.sr-stage {
+  perspective: 1400px;
+}
+
+.sr-card3d {
+  transform-style: preserve-3d;
+  transition: transform 0.4s cubic-bezier(0.2, 0.7, 0.3, 1), box-shadow 0.4s ease;
+  will-change: transform;
+}
+
+.sr-card3d:hover {
+  transform: rotateX(3deg) rotateY(-3deg) translateY(-6px);
+  box-shadow: 0 32px 60px -26px rgba(0, 0, 0, 1);
+}
+
+.sr-card3d .sr-lift {
+  transform: translateZ(28px);
+}
+
+/* Spiegelung unter dem Rad, wie auf einem polierten Ladenboden. */
+.sr-reflect {
+  -webkit-mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.35), transparent 70%);
+  mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.35), transparent 70%);
+  transform: scaleY(-1);
+  opacity: 0.28;
+  filter: blur(1px);
+  pointer-events: none;
+}
+
+/* --- Bildpunkte (Hotspots) ---------------------------------------------- */
+
+.sr-hotspot {
+  position: absolute;
+  width: 26px;
+  height: 26px;
+  margin: -13px 0 0 -13px;
+  border-radius: 999px;
+  border: 2px solid rgba(255, 255, 255, 0.9);
+  background: color-mix(in srgb, var(--sr-accent) 70%, #000000);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.8);
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  font-size: 11px;
+  font-weight: 800;
+  color: #fff;
+  transition: transform 0.18s ease, background-color 0.18s ease;
+}
+
+.sr-hotspot:hover,
+.sr-hotspot[data-active='true'] {
+  transform: scale(1.22);
+}
+
+.sr-hotspot[data-tone='defect'] {
+  background: #a8443c;
+}
+
+.sr-hotspot[data-tone='highlight'] {
+  background: color-mix(in srgb, var(--sr-accent) 85%, #ffffff);
+  color: #17110a;
+}
+
+/* Ruhiger Puls, damit Käufer merken: die Punkte sind anklickbar. */
+.sr-hotspot::before {
+  content: '';
+  position: absolute;
+  inset: -8px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  opacity: 0;
+  animation: sr-ping 2.6s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+
+@keyframes sr-ping {
+  0% {
+    transform: scale(0.7);
+    opacity: 0.5;
+  }
+  70%,
+  100% {
+    transform: scale(1.25);
+    opacity: 0;
+  }
+}
+
+.sr-hotspot-tip {
+  position: absolute;
+  z-index: 20;
+  min-width: 150px;
+  max-width: 260px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(10, 9, 8, 0.96);
+  border: 1px solid var(--sr-accent-line);
+  box-shadow: 0 16px 36px -16px rgba(0, 0, 0, 1);
+  backdrop-filter: blur(6px);
+  pointer-events: none;
+}
+
+/* --- Sonstiges ---------------------------------------------------------- */
+
+.sr-scroll::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.sr-scroll::-webkit-scrollbar-thumb {
+  background-color: var(--sr-line);
+  border-radius: 999px;
+}
+
+.sr-grain {
+  position: relative;
+}
+
+/* Feines Rauschen bricht die Flächen auf – ohne Bilddatei. */
+.sr-grain::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.035;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+.sr-fade-in {
+  animation: sr-fade 0.45s ease both;
+}
+
+@keyframes sr-fade {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sr-card3d,
+  .sr-card3d:hover,
+  .sr-fade-in {
+    transition: none;
+    animation: none;
+    transform: none;
+  }
+  .sr-hotspot::before {
+    animation: none;
+  }
+}

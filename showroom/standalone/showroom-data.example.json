@@ -1,0 +1,164 @@
+{
+  "version": 1,
+  "exportedAt": 1787270400000,
+  "profile": {
+    "displayName": "Radwerk Musterstadt",
+    "tagline": "Gebrauchte Fahrräder, ehrlich hergerichtet.",
+    "about": "Beispieltext. Ich kaufe gebrauchte Fahrräder an, bringe sie in der eigenen Werkstatt wieder in Schuss und verkaufe sie weiter. Jedes Rad wird durchgesehen, gereinigt und mit allen bekannten Mängeln offen beschrieben.",
+    "legalName": "Max Mustermann",
+    "street": "Musterstraße 1",
+    "zip": "12345",
+    "city": "Musterstadt",
+    "country": "Deutschland",
+    "email": "kontakt@example.com",
+    "phone": "0123 4567890",
+    "whatsapp": "0123 4567890",
+    "vatId": "",
+    "kleinunternehmer": true,
+    "responsiblePerson": "Max Mustermann",
+    "isCommercial": true,
+    "openingHours": "Besichtigung nach Absprache",
+    "pickupNote": "Abholung in Musterstadt. Probefahrt ist selbstverständlich möglich.",
+    "website": "https://www.example.com",
+    "instagram": "",
+    "accent": "#c8934a"
+  },
+  "listings": [
+    {
+      "id": "beispiel-trekking",
+      "slug": "musterrad-tourenfreund-3-trekkingrad",
+      "title": "Musterrad Tourenfreund 3 – Trekkingrad 28 Zoll",
+      "subtitle": "Rahmenhöhe 54 cm",
+      "description": "Beispielanzeige. Solides Trekkingrad, komplett durchgesehen: neue Kette, neue Bremsbeläge, Laufräder zentriert, Licht geprüft.\n\nSchaltung: 24 Gänge – Kettenschaltung\nBremsen: V-Brake\nLaufräder: 28 Zoll\nRahmenhöhe: 54 cm\n\nZustand: Sehr gut. Ehrlich gesagt, was nicht perfekt ist:\n• Leichte Lackkratzer am Oberrohr\n• Sattel mit Gebrauchsspuren\n\nMit dabei: Licht (StVZO), Schutzbleche, Gepäckträger, Ständer.\n\nPreis: 289 €. Über einen fairen Vorschlag lässt sich reden.\n\nAbholung in Musterstadt. Probefahrt ist selbstverständlich möglich.",
+      "price": 289,
+      "priceType": "vb",
+      "category": "trekking",
+      "condition": "sehr_gut",
+      "status": "online",
+      "brand": "Musterrad",
+      "model": "Tourenfreund 3",
+      "year": "2016",
+      "color": "Dunkelgrün",
+      "frameSize": "54 cm",
+      "wheelSize": "28 Zoll",
+      "frameType": "Diamantrahmen",
+      "gearSystem": "Kettenschaltung",
+      "gearCount": "24",
+      "brakes": "V-Brake",
+      "material": "Aluminium",
+      "weightKg": "15,2",
+      "specs": [
+        { "id": "spec-t1", "label": "Nabendynamo", "value": "Ja, mit Standlicht" },
+        { "id": "spec-t2", "label": "Letzte Inspektion", "value": "Juli 2026" }
+      ],
+      "extras": ["Licht (StVZO)", "Schutzbleche", "Gepäckträger", "Ständer", "Klingel"],
+      "defects": ["Leichte Lackkratzer am Oberrohr", "Sattel mit Gebrauchsspuren"],
+      "photos": [],
+      "photoIndices": [],
+      "coverIndex": 0,
+      "hotspots": [
+        {
+          "id": "hs-t1",
+          "photoIndex": 0,
+          "x": 0.62,
+          "y": 0.68,
+          "label": "Schaltung",
+          "value": "24 Gänge, sauber eingestellt",
+          "tone": "highlight"
+        },
+        {
+          "id": "hs-t2",
+          "photoIndex": 0,
+          "x": 0.28,
+          "y": 0.45,
+          "label": "Kratzer",
+          "value": "Am Oberrohr, etwa 4 cm lang",
+          "tone": "defect"
+        }
+      ],
+      "turntable": {
+        "enabled": false,
+        "startIndex": 0
+      },
+      "location": {
+        "zip": "12345",
+        "city": "Musterstadt",
+        "district": "Musterviertel"
+      },
+      "delivery": ["abholung", "lieferung"],
+      "createdAt": 1785542400000,
+      "updatedAt": 1786924800000,
+      "publishedAt": 1785628800000,
+      "soldAt": null,
+      "views": 41,
+      "likes": 3,
+      "featured": true
+    },
+    {
+      "id": "beispiel-kinderrad",
+      "slug": "beispielrad-kinderrad-20-zoll",
+      "title": "Beispielrad Kinderrad 20 Zoll",
+      "subtitle": "Für etwa 6 bis 9 Jahre",
+      "description": "Beispielanzeige. Kinderrad mit 20-Zoll-Laufrädern, technisch durchgesehen. Bremsen neu eingestellt, Kette gereinigt und geölt, Reifen haben noch gutes Profil.\n\nSchaltung: 6 Gänge – Kettenschaltung\nBremsen: Felgenbremse\nLaufräder: 20 Zoll\n\nZustand: Gut. Ehrlich gesagt, was nicht perfekt ist:\n• Aufkleber am Rahmen teilweise abgelöst\n\nMit dabei: Ständer, Klingel, Schutzbleche.\n\nPreis: 95 € – Festpreis.\n\nAbholung in Musterstadt. Versand innerhalb Deutschlands gegen Aufpreis möglich.",
+      "price": 95,
+      "priceType": "fest",
+      "category": "kinderrad",
+      "condition": "gut",
+      "status": "reserviert",
+      "brand": "Beispielrad",
+      "model": "Kids 20",
+      "year": "2019",
+      "color": "Blau",
+      "frameSize": "28 cm",
+      "wheelSize": "20 Zoll",
+      "frameType": "Tiefeinsteiger",
+      "gearSystem": "Kettenschaltung",
+      "gearCount": "6",
+      "brakes": "Felgenbremse",
+      "material": "Stahl",
+      "weightKg": "11,0",
+      "specs": [
+        { "id": "spec-k1", "label": "Passende Körpergröße", "value": "ca. 120 bis 140 cm" }
+      ],
+      "extras": ["Ständer", "Klingel", "Schutzbleche"],
+      "defects": ["Aufkleber am Rahmen teilweise abgelöst"],
+      "photos": [],
+      "photoIndices": [],
+      "coverIndex": 0,
+      "hotspots": [
+        {
+          "id": "hs-k1",
+          "photoIndex": 0,
+          "x": 0.5,
+          "y": 0.55,
+          "label": "Rahmen",
+          "value": "Tiefer Einstieg, gut zu besteigen",
+          "tone": "neutral"
+        }
+      ],
+      "turntable": {
+        "enabled": false,
+        "startIndex": 0
+      },
+      "location": {
+        "zip": "12345",
+        "city": "Musterstadt"
+      },
+      "delivery": ["abholung", "versand"],
+      "shippingCost": 25,
+      "createdAt": 1786492800000,
+      "updatedAt": 1786924800000,
+      "publishedAt": 1786492800000,
+      "soldAt": null,
+      "views": 12,
+      "likes": 1,
+      "featured": false,
+      "reservedFor": ""
+    }
+  ],
+  "settings": {
+    "transport": "mailto",
+    "endpointUrl": "",
+    "publicBaseUrl": "https://www.example.com"
+  }
+}

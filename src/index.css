@@ -1,5 +1,9 @@
 @import "tailwindcss";
 
+/* Der Showroom liegt bewusst außerhalb von src/ (er wird als eigene Website
+   herauskopiert). Ohne diese Zeile fände Tailwind seine Klassen nicht. */
+@source "../showroom";
+
 @theme {
   --color-slate-950: #020617;
   --color-slate-900: #0f172a;

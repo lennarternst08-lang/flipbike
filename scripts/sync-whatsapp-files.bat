@@ -2,11 +2,12 @@
 REM ============================================================================
 REM  Haelt whatsapp-neu.md und whatsapp-context.md aktuell.
 REM  Wird von der Windows-Aufgabe "FlipBike-WhatsApp-Sync" alle 15 Minuten
-REM  gestartet, solange der Rechner laeuft.
+REM  gestartet, solange der Rechner laeuft - und zwar ueber scripts/lauf-versteckt.vbs,
+REM  damit nicht viermal pro Stunde ein CMD-Fenster aufblitzt.
 REM
 REM  KOSTET KEINE TOKENS: hier laeuft nur der Node-Abzug aus der Bridge-Datenbank,
 REM  kein Claude. Die Auswertung (Leads, Tagesnotiz) bleibt beim Tageslauf in
-REM  scan-whatsapp-leads.bat.
+REM  tageslauf.bat.
 REM
 REM  Nebenbei Wachhund fuer die Bridge: ist sie tot, waechst messages.db nicht
 REM  mehr und alles meldet faelschlich "nichts Neues".

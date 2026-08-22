@@ -1,4 +1,4 @@
-// Schreibt den Scan-Stand fort. Wird von scan-whatsapp-leads.bat NUR nach einem
+// Schreibt den Scan-Stand fort. Wird von tageslauf.bat NUR nach einem
 // erfolgreichen Claude-Lauf aufgerufen - bricht der Lauf ab, bleibt der alte
 // Stand stehen und dieselben Nachrichten kommen beim naechsten Mal wieder ins Delta.
 //
