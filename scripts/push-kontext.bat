@@ -31,6 +31,11 @@ REM tagesnotiz.md statt whatsapp-zusammenfassung.md.
 if exist "%PROJEKT%\tagesnotiz.md" (
   copy /Y "%PROJEKT%\tagesnotiz.md" "%KONTEXT%\tagesnotiz.md" >nul
 )
+REM Die Aenderungsliste des Betriebs gehoert genauso ins Projekt-Wissen - sonst
+REM sieht das Claude-Projekt nur die WhatsApp-Seite und nie die Geschaeftszahlen.
+if exist "%PROJEKT%\ai-report-neu.md" (
+  copy /Y "%PROJEKT%\ai-report-neu.md" "%KONTEXT%\ai-report-neu.md" >nul
+)
 REM Alten Namen im Kontext-Repo aufraeumen - der Inhalt steckt vollstaendig in
 REM tagesnotiz.md, und zwei Dateien mit demselben Zweck stiften nur Verwirrung.
 if exist "%KONTEXT%\whatsapp-zusammenfassung.md" del "%KONTEXT%\whatsapp-zusammenfassung.md"
