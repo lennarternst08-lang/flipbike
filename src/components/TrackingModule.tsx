@@ -408,6 +408,22 @@ export function TrackingModule({
     );
   };
 
+  // Kleinanzeigen-Inseratsgebühr per Klick in der KA-Spalte buchen/zurücknehmen.
+  // Ohne Inserat wird eins gebucht, sonst das zuletzt gebuchte wieder entfernt –
+  // damit ist ein Fehlklick direkt in der Tabelle korrigierbar. Für mehrere
+  // Inserate am selben Rad bleibt der Zähler im Drei-Punkte-Menü.
+  const handleToggleAd = (bike: Bike) => {
+    const vorher = adExpenses(bike).length;
+    const expenses = vorher === 0 ? addAdExpense(bike) : removeLastAdExpense(bike);
+    updateBike(bike.id, { expenses });
+    addLog(
+      vorher === 0
+        ? `Kleinanzeigen-Inserat gebucht für "${bike.name}": ${formatCurrency(KLEINANZEIGEN_AD_COST)}`
+        : `Kleinanzeigen-Inserat entfernt für "${bike.name}" (${vorher - 1}× verbleibend)`,
+      'tracking'
+    );
+  };
+
   const confirmSale = () => {
     if (salePromptBikeId) {
       updateBike(salePromptBikeId, {
@@ -1701,6 +1717,7 @@ export function TrackingModule({
                   <th className="px-2 py-3 cursor-pointer hover:bg-slate-700/50 sticky left-0 z-40 bg-slate-800 border-r border-slate-700/50 min-w-[120px]" onClick={() => handleSort('name')}>Fahrrad ({filteredBikes.length}) <SortIcon field="name" /></th>
                   <th className="px-1 py-3 border-b border-slate-700/50 w-8 text-center" title="Akquise-Quelle (FL = Flyer, KA = Kleinanzeigen)">Src</th>
                   <th className="px-1 py-3 border-b border-slate-700/50 w-8 text-center" title={`Putzen durch Nikita (${formatCurrency(PUTZEN_COST)}) – zum Buchen anklicken`}>Ptz</th>
+                  <th className="px-1 py-3 border-b border-slate-700/50 w-8 text-center" title={`Kleinanzeigen-Inserat (${formatCurrency(KLEINANZEIGEN_AD_COST)}/St.) – zum Buchen anklicken. Mehrere Inserate über das Drei-Punkte-Menü.`}>KA</th>
                   <th className="px-2 py-3 cursor-pointer hover:bg-slate-700/50 border-b border-slate-700/50" onClick={() => handleSort('status')}>Status <SortIcon field="status" /></th>
                   <th className="px-2 py-3 cursor-pointer hover:bg-slate-700/50 border-b border-slate-700/50" onClick={() => handleSort('purchaseDate')}>Ankauf <SortIcon field="purchaseDate" /></th>
                   <th className="px-2 py-3 cursor-pointer hover:bg-slate-700/50 border-b border-slate-700/50" onClick={() => handleSort('purchasePrice')}>EK (€) <SortIcon field="purchasePrice" /></th>
@@ -1950,6 +1967,28 @@ export function TrackingModule({
                             {hasPutzen(bike) && <Check className="w-3 h-3" strokeWidth={3} />}
                           </button>
                         )}
+                      </td>
+                      <td className="px-1 py-2 text-center w-8">
+                        {/* Kleinanzeigen-Inseratsgebühr direkt buchen (Zähler ab 2 Inseraten) */}
+                        {!bike.id.startsWith('monthly-mat-') && !bike._isHypothetical && (() => {
+                          const adCount = adExpenses(bike).length;
+                          return (
+                            <button
+                              onClick={(e) => { e.stopPropagation(); handleToggleAd(bike); }}
+                              title={adCount === 0
+                                ? `Kleinanzeigen-Inserat buchen (${formatCurrency(KLEINANZEIGEN_AD_COST)})`
+                                : `${adCount}× Inserat gebucht (${formatCurrency(adCount * KLEINANZEIGEN_AD_COST)}) – Klick entfernt das letzte`}
+                              className={`w-4 h-4 rounded border flex items-center justify-center transition-colors mx-auto text-[9px] font-bold leading-none ${
+                                adCount > 0
+                                  ? 'bg-blue-500 border-blue-500 text-white'
+                                  : 'border-slate-600 hover:border-blue-400 hover:bg-blue-500/10'
+                              }`}
+                            >
+                              {adCount === 1 && <Check className="w-3 h-3" strokeWidth={3} />}
+                              {adCount > 1 && adCount}
+                            </button>
+                          );
+                        })()}
                       </td>
                       <td className="px-2 py-2">
                         <select
