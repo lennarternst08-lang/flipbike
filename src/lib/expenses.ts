@@ -38,7 +38,7 @@ export function togglePutzen(bike: Pick<Bike, 'expenses'>): { expenses: Expense[
 
 // Kosten pro Kleinanzeigen-Inserat. Jede Gebühr wird als eigener Expense gespeichert,
 // daher wirkt eine spätere Preisänderung nur auf neu erfasste Inserate.
-export const KLEINANZEIGEN_AD_COST = 2.5;
+export const KLEINANZEIGEN_AD_COST = 2.49;
 export const KLEINANZEIGEN_AD_LABEL = 'Kleinanzeigen-Inserat';
 
 export function isAdExpense(e: Expense): boolean {
