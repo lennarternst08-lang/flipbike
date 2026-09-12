@@ -36,9 +36,11 @@ export function togglePutzen(bike: Pick<Bike, 'expenses'>): { expenses: Expense[
   return { expenses: [...expenses, newExpense], added: true };
 }
 
-// Kosten pro Kleinanzeigen-Inserat. Jede Gebühr wird als eigener Expense gespeichert,
-// daher wirkt eine spätere Preisänderung nur auf neu erfasste Inserate.
-export const KLEINANZEIGEN_AD_COST = 2.49;
+// Kosten pro Kleinanzeigen-Inserat. Jede Gebühr wird als eigener Expense mit eigenem
+// Betrag gespeichert, daher wirkt eine Preisänderung nur auf neu erfasste Inserate –
+// bereits gebuchte Gebühren behalten den Preis, der zum Buchungszeitpunkt galt.
+// Seit 01.09.2026 (Konditionsanpassung für gewerbliche Anbieter) 4,49 €, davor 2,49 €.
+export const KLEINANZEIGEN_AD_COST = 4.49;
 export const KLEINANZEIGEN_AD_LABEL = 'Kleinanzeigen-Inserat';
 
 export function isAdExpense(e: Expense): boolean {
@@ -47,6 +49,13 @@ export function isAdExpense(e: Expense): boolean {
 
 export function adExpenses(bike: Pick<Bike, 'expenses'>): Expense[] {
   return (bike.expenses || []).filter(isAdExpense);
+}
+
+// Tatsächlich gebuchte Inseratskosten eines Rads. Bewusst die Summe der gespeicherten
+// Beträge statt anzahl × KLEINANZEIGEN_AD_COST: sonst würden alte 2,49-€-Inserate
+// rückwirkend zum neuen Preis angezeigt.
+export function adTotal(bike: Pick<Bike, 'expenses'>): number {
+  return adExpenses(bike).reduce((s, e) => s + e.amount, 0);
 }
 
 // Wann die Inseratsgebühr wirtschaftlich anfällt: am Tag des Inserats, nicht am Tag

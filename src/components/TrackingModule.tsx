@@ -23,7 +23,7 @@ import { BikeDetailsFields } from './BikeDetailsFields';
 import { emptyBikeDetails, openKaufvertragPrint } from '../lib/kaufvertrag';
 import {
   PUTZEN_COST, hasPutzen, togglePutzen,
-  KLEINANZEIGEN_AD_COST, adExpenses, adExpenseDate, addAdExpense, removeLastAdExpense,
+  KLEINANZEIGEN_AD_COST, adExpenses, adTotal, adExpenseDate, addAdExpense, removeLastAdExpense,
 } from '../lib/expenses';
 import { doc, deleteDoc, setDoc, getDoc, getDocs, updateDoc, collection, query, where, arrayUnion } from 'firebase/firestore';
 import { db, auth } from '../firebase';
@@ -1837,6 +1837,8 @@ export function TrackingModule({
                                     {/* Kleinanzeigen-Inserate (Gebühr pro Inserat) */}
                                     {(() => {
                                       const adCount = adExpenses(bike).length;
+                                      // Summe der gebuchten Gebühren – ältere Inserate liegen ggf. noch bei 2,49 €.
+                                      const adSumme = adTotal(bike);
                                       // Die Gebühr wird auf den Inseratstag gebucht, nicht auf den Erfassungstag.
                                       const buchungsTag = adExpenseDate(bike);
                                       const addAd = (e: React.MouseEvent) => {
@@ -1868,7 +1870,7 @@ export function TrackingModule({
                                             <div className="flex-1 text-center">
                                               <span className="text-sm font-bold text-slate-200">{adCount}×</span>
                                               {adCount > 0 && (
-                                                <span className="text-xs text-blue-400 ml-1.5">= {formatCurrency(adCount * KLEINANZEIGEN_AD_COST)}</span>
+                                                <span className="text-xs text-blue-400 ml-1.5">= {formatCurrency(adSumme)}</span>
                                               )}
                                             </div>
                                             <button
@@ -1977,7 +1979,7 @@ export function TrackingModule({
                               onClick={(e) => { e.stopPropagation(); handleToggleAd(bike); }}
                               title={adCount === 0
                                 ? `Kleinanzeigen-Inserat buchen (${formatCurrency(KLEINANZEIGEN_AD_COST)})`
-                                : `${adCount}× Inserat gebucht (${formatCurrency(adCount * KLEINANZEIGEN_AD_COST)}) – Klick entfernt das letzte`}
+                                : `${adCount}× Inserat gebucht (${formatCurrency(adTotal(bike))}) – Klick entfernt das letzte`}
                               className={`w-4 h-4 rounded border flex items-center justify-center transition-colors mx-auto text-[9px] font-bold leading-none ${
                                 adCount > 0
                                   ? 'bg-blue-500 border-blue-500 text-white'
