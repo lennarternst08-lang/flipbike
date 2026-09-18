@@ -228,6 +228,26 @@ export function ShowroomModule({
     [bikes, listings, addLog],
   );
 
+  /**
+   * Anzeigen aus einem hochgeladenen KI-Steckbrief. Sie kommen immer als
+   * Entwurf herein – geprüft wird von Hand, veröffentlicht wird von Hand.
+   */
+  const createFromSheet = useCallback(
+    (fresh: ShowroomListing[]) => {
+      if (fresh.length === 0) return;
+      setListings((prev) => [...fresh, ...prev]);
+      addLog?.(
+        fresh.length === 1
+          ? `Showroom-Anzeige aus Steckbrief angelegt: "${fresh[0].title}"`
+          : `${fresh.length} Showroom-Anzeigen aus Steckbrief angelegt`,
+        'tracking',
+      );
+      // Bei genau einem Rad direkt in den Editor – das ist fast immer der Fall.
+      if (fresh.length === 1) setSellerView({ kind: 'editor', id: fresh[0].id });
+    },
+    [addLog],
+  );
+
   const createEmpty = useCallback(() => {
     const listing = {
       ...emptyListing(),
@@ -519,6 +539,7 @@ export function ShowroomModule({
                 onEdit={(id) => setSellerView({ kind: 'editor', id })}
                 onCreateFromBike={createFromBike}
                 onCreateEmpty={createEmpty}
+                onCreateFromSheet={createFromSheet}
                 onDelete={deleteListing}
                 onDuplicate={duplicateListing}
                 onStatusChange={changeStatus}

@@ -27,6 +27,7 @@ import type {
 import type { BikeLike } from '../../lib/listing';
 import { coverPhoto, formatPrice, listingPhotos, relativeDate } from '../../lib/listing';
 import { STATUS_LABELS, profileGaps } from '../../config/seller';
+import { SheetImportPanel } from './SheetImportPanel';
 
 // ============================================================================
 // Verkäufer-Startseite
@@ -46,6 +47,8 @@ export interface SellerDashboardProps {
   onEdit: (id: string) => void;
   onCreateFromBike: (bikeId: string) => void;
   onCreateEmpty: () => void;
+  /** Anzeigen aus einem hochgeladenen KI-Steckbrief. */
+  onCreateFromSheet: (listings: ShowroomListing[]) => void;
   onDelete: (id: string) => void;
   onDuplicate: (id: string) => void;
   onStatusChange: (id: string, status: ListingStatus) => void;
@@ -83,6 +86,7 @@ export function SellerDashboard({
   onEdit,
   onCreateFromBike,
   onCreateEmpty,
+  onCreateFromSheet,
   onDelete,
   onDuplicate,
   onStatusChange,
@@ -325,6 +329,13 @@ export function SellerDashboard({
           </>
         )}
       </section>
+
+      {/* --- Steckbrief aus der KI --- */}
+      <SheetImportPanel
+        bikes={bikes}
+        takenSlugs={listings.map((l) => l.slug)}
+        onImport={onCreateFromSheet}
+      />
 
       {/* --- Anzeigen --- */}
       {!hasListings ? (
