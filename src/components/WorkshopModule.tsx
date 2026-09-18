@@ -9,6 +9,8 @@ import { increment, doc, updateDoc, setDoc, deleteDoc } from 'firebase/firestore
 import { db, auth } from '../firebase';
 import { ReceiptUploader } from './ReceiptUploader';
 import { BikeDetailsFields } from './BikeDetailsFields';
+import { GroupOrderModal } from './GroupOrderModal';
+import { GroupOrderDraftItem } from '../lib/groupOrders';
 import { WageScenarios } from './WageScenarios';
 import { sanitizeDetails, openKaufvertragPrint, detailsCompleteness } from '../lib/kaufvertrag';
 import { PUTZEN_COST, PUTZEN_LABEL, hasPutzen, togglePutzen } from '../lib/expenses';
@@ -480,10 +482,7 @@ export function WorkshopModule({ bikes, inventoryItems, groupOrders = [], receip
   const [isAddItemModalOpen, setIsAddItemModalOpen] = useState(false);
 
   const [isAddGroupOrderModalOpen, setIsAddGroupOrderModalOpen] = useState(false);
-  const [groupOrderData, setGroupOrderData] = useState({ name: '', totalPrice: 0, date: new Date().toISOString().split('T')[0] });
-  const [groupOrderItems, setGroupOrderItems] = useState<Partial<InventoryItem>[]>([]);
-  const [newGroupOrderItem, setNewGroupOrderItem] = useState<Partial<InventoryItem>>({ name: '', category: 'part', pricePerUnit: 0, quantity: 1 });
-  
+
   const [expandedOrders, setExpandedOrders] = useState<Record<string, boolean>>({});
 
   // Materialkosten Search State
@@ -498,15 +497,12 @@ export function WorkshopModule({ bikes, inventoryItems, groupOrders = [], receip
     return true;
   });
 
-  const handleAddGroupOrderSubmit = () => {
-      if (!groupOrderData.name || !addGroupOrder) return;
-      addGroupOrder(
-          { name: groupOrderData.name, totalPrice: groupOrderData.totalPrice, date: groupOrderData.date },
-          groupOrderItems
-      );
-      setIsAddGroupOrderModalOpen(false);
-      setGroupOrderData({ name: '', totalPrice: 0, date: new Date().toISOString().split('T')[0] });
-      setGroupOrderItems([]);
+  const handleAddGroupOrderSubmit = (
+      daten: { name: string; totalPrice: number; date: string },
+      items: GroupOrderDraftItem[]
+  ) => {
+      if (!daten.name || !addGroupOrder) return;
+      addGroupOrder(daten, items);
   };
 
   const handleAddItemSubmit = () => {
@@ -804,156 +800,10 @@ export function WorkshopModule({ bikes, inventoryItems, groupOrders = [], receip
 
             {/* Add Group Order Modal */}
             {isAddGroupOrderModalOpen && (
-                <div className="fixed inset-0 z-[120] flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4">
-                  <div className="w-full max-w-2xl bg-slate-900 border border-slate-800 rounded-xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
-                    <div className="flex items-center justify-between p-4 border-b border-slate-800">
-                      <h2 className="text-lg font-bold text-blue-400 flex items-center">
-                        <Folder className="w-5 h-5 mr-2" />
-                        Neue Gruppenbestellung
-                      </h2>
-                      <button 
-                        onClick={() => setIsAddGroupOrderModalOpen(false)}
-                        className="p-1 rounded-md text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition-colors"
-                      >
-                        <X className="w-5 h-5" />
-                      </button>
-                    </div>
-                    <div className="p-6 overflow-y-auto space-y-6 flex-1">
-                      {/* Order Details */}
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 bg-slate-950/50 p-4 rounded-lg border border-slate-800">
-                         <div className="md:col-span-2">
-                           <label className="block text-sm font-medium text-slate-400 mb-1">Name der Bestellung (z.B. Bike24 Großbestellung)</label>
-                           <Input 
-                             value={groupOrderData.name}
-                             onChange={(e) => setGroupOrderData({...groupOrderData, name: e.target.value})}
-                             className="bg-slate-800 border-slate-700 text-slate-100"
-                             placeholder="Bestellungsname"
-                             autoFocus
-                           />
-                         </div>
-                         <div>
-                            <label className="block text-sm font-medium text-slate-400 mb-1">Gesamtpreis (€)</label>
-                            <Input 
-                              type="number"
-                              value={groupOrderData.totalPrice || ''}
-                              onChange={(e) => setGroupOrderData({...groupOrderData, totalPrice: parseFloat(e.target.value) || 0})}
-                              className="bg-slate-800 border-slate-700 text-slate-100 font-bold"
-                              placeholder="0.00"
-                            />
-                         </div>
-                         <div>
-                            <label className="block text-sm font-medium text-slate-400 mb-1">Kaufdatum</label>
-                            <Input 
-                              type="date"
-                              value={groupOrderData.date}
-                              onChange={(e) => setGroupOrderData({...groupOrderData, date: e.target.value})}
-                              className="bg-slate-800 border-slate-700 text-slate-100"
-                            />
-                         </div>
-                      </div>
-
-                      {/* Items List */}
-                      <div>
-                          <h3 className="text-sm font-medium text-slate-300 mb-3 border-b border-slate-800 pb-2">Enthaltene Artikel ({groupOrderItems.length})</h3>
-                          {groupOrderItems.length === 0 ? (
-                              <p className="text-xs text-slate-500 italic mb-4">Noch keine Artikel hinzugefügt.</p>
-                          ) : (
-                              <div className="space-y-2 mb-4">
-                                  {groupOrderItems.map((item, idx) => (
-                                      <div key={idx} className="flex justify-between items-center text-sm bg-slate-800/50 p-2 rounded border border-slate-700/50">
-                                          <div className="flex flex-col">
-                                              <span className="text-slate-200">{item.name} <span className="text-slate-500 ml-1">({item.category === 'consumable' ? 'Verbrauch' : 'Einbau'})</span></span>
-                                              <span className="text-xs text-slate-500">{item.quantity}x à {formatCurrency(item.pricePerUnit || 0)}</span>
-                                          </div>
-                                          <button onClick={() => setGroupOrderItems(groupOrderItems.filter((_, i) => i !== idx))} className="text-red-400 hover:text-red-300">
-                                              <X className="w-4 h-4" />
-                                          </button>
-                                      </div>
-                                  ))}
-                              </div>
-                          )}
-
-                          {/* Add specific item form */}
-                          <div className="bg-slate-800 p-3 rounded-lg border border-slate-700 shadow-inner">
-                              <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Artikel hinzufügen</h4>
-                              <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 items-end">
-                                  <div className="sm:col-span-5">
-                                      <label className="block text-[10px] text-slate-500 mb-1">Name</label>
-                                      <Input 
-                                          value={newGroupOrderItem.name || ''}
-                                          onChange={(e) => setNewGroupOrderItem({...newGroupOrderItem, name: e.target.value})}
-                                          className="bg-slate-900 border-slate-600 text-xs h-8"
-                                          placeholder="Teil-Name"
-                                      />
-                                  </div>
-                                  <div className="sm:col-span-3">
-                                      <label className="block text-[10px] text-slate-500 mb-1">Kategorie</label>
-                                      <select 
-                                          className="w-full bg-slate-900 border-slate-600 text-slate-200 text-xs rounded-md block h-8 px-2"
-                                          value={newGroupOrderItem.category || 'part'}
-                                          onChange={(e) => setNewGroupOrderItem({...newGroupOrderItem, category: e.target.value as any})}
-                                      >
-                                          <option value="part">Einbauteil</option>
-                                          <option value="consumable">Verbrauch</option>
-                                      </select>
-                                  </div>
-                                  <div className="sm:col-span-2">
-                                      <label className="block text-[10px] text-slate-500 mb-1">Stückzahl</label>
-                                      <Input 
-                                          type="number"
-                                          value={newGroupOrderItem.quantity || ''}
-                                          onChange={(e) => setNewGroupOrderItem({...newGroupOrderItem, quantity: parseInt(e.target.value) || 0})}
-                                          className="bg-slate-900 border-slate-600 text-xs h-8"
-                                      />
-                                  </div>
-                                  <div className="sm:col-span-2">
-                                      <label className="block text-[10px] text-slate-500 mb-1">€ / Stk</label>
-                                      <Input 
-                                          type="number"
-                                          value={newGroupOrderItem.pricePerUnit !== undefined ? newGroupOrderItem.pricePerUnit : ''}
-                                          onChange={(e) => setNewGroupOrderItem({...newGroupOrderItem, pricePerUnit: parseFloat(e.target.value) || 0})}
-                                          className="bg-slate-900 border-slate-600 text-xs h-8"
-                                      />
-                                  </div>
-                                  <div className="sm:col-span-12 mt-2">
-                                      <Button 
-                                          size="sm"
-                                          className="w-full bg-slate-700 hover:bg-slate-600 text-slate-200 h-8 text-xs"
-                                          onClick={() => {
-                                              if (newGroupOrderItem.name) {
-                                                  setGroupOrderItems([...groupOrderItems, newGroupOrderItem]);
-                                                  setNewGroupOrderItem({ name: '', category: 'part', pricePerUnit: 0, quantity: 1 });
-                                              }
-                                          }}
-                                          disabled={!newGroupOrderItem.name}
-                                      >
-                                          <Plus className="w-3 h-3 mr-1" /> Artikel zur Bestellung hinzufügen
-                                      </Button>
-                                  </div>
-                              </div>
-                          </div>
-                      </div>
-                    </div>
-                    
-                    {/* Modal Footer */}
-                    <div className="p-4 border-t border-slate-800 bg-slate-900/80 flex space-x-3 mt-auto">
-                        <Button 
-                          variant="outline" 
-                          className="flex-1 border-slate-700 text-slate-300 hover:bg-slate-800"
-                          onClick={() => setIsAddGroupOrderModalOpen(false)}
-                        >
-                          Abbrechen
-                        </Button>
-                        <Button 
-                          className="flex-1 bg-blue-600 hover:bg-blue-500 text-white font-medium shadow-lg shadow-blue-500/20"
-                          onClick={handleAddGroupOrderSubmit}
-                          disabled={!groupOrderData.name || groupOrderData.totalPrice <= 0 || groupOrderItems.length === 0}
-                        >
-                          Bestellung speichern
-                        </Button>
-                    </div>
-                  </div>
-                </div>
+                <GroupOrderModal
+                  onSave={handleAddGroupOrderSubmit}
+                  onClose={() => setIsAddGroupOrderModalOpen(false)}
+                />
             )}
         </div>
     )

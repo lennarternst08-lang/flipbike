@@ -20,6 +20,7 @@ import type { ShowroomListing } from '../showroom/types';
 import { Bike, DailyTodo, Log, ServiceRequest, Receipt, InventoryItem, GroupOrder } from './types';
 import { sanitizeDetails } from './lib/kaufvertrag';
 import { buildAiReport, aiReportFileName } from './lib/aiReport';
+import { GroupOrderDraftItem, planGroupOrderUpdate } from './lib/groupOrders';
 import { BarChart3, Wrench, CheckSquare, Download, FileText, Image, User, X, LogIn, LogOut, RotateCcw, Calendar, RefreshCw, CloudUpload, Store } from 'lucide-react';
 import { auth, db, signInWithGoogle, logout } from './firebase';
 import { onAuthStateChanged } from 'firebase/auth';
@@ -913,6 +914,58 @@ function App() {
     }
   }, [groupOrders, inventoryItems, addLog]);
 
+  // Nachträgliche Korrektur einer Bestellung. Zieht Lager und bereits gebuchte
+  // Materialausgaben mit – was die Bestellung kostet, muss am Rad ankommen.
+  // Gibt Fehler zurück (statt zu schreiben), wenn ein Posten schon verbaut ist.
+  const updateGroupOrder = useCallback((
+    orderId: string,
+    daten: { name: string; totalPrice: number; date: string },
+    items: GroupOrderDraftItem[]
+  ): string[] | void => {
+    const order = groupOrders.find(o => o.id === orderId);
+    if (!order) return;
+
+    const uid = auth.currentUser?.uid;
+    const plan = planGroupOrderUpdate({ id: orderId, name: daten.name, date: daten.date }, items, inventoryItems, bikes, uid || '');
+    if (plan.fehler.length > 0) return plan.fehler;
+
+    const aktualisiert: GroupOrder = { ...order, ...daten };
+    setGroupOrders(prev => prev.map(o => (o.id === orderId ? aktualisiert : o)));
+    setInventoryItems(prev => [
+      ...plan.anlegen,
+      ...prev
+        .filter(i => !plan.loeschen.includes(i.id))
+        .map(i => {
+          const treffer = plan.aendern.find(a => a.id === i.id);
+          return treffer ? { ...i, ...treffer.updates } : i;
+        }),
+    ]);
+    // updateBike schreibt selbst nach Firestore und setzt lastModified.
+    plan.ausgaben.forEach(({ bikeId, expenses }) => updateBike(bikeId, { expenses }));
+
+    if (uid) {
+      setDoc(doc(db, 'orders', orderId), aktualisiert)
+        .catch(e => handleFirestoreError(e, OperationType.UPDATE, 'orders'));
+      plan.anlegen.forEach(i => setDoc(doc(db, 'inventoryItems', i.id), i)
+        .catch(e => handleFirestoreError(e, OperationType.CREATE, 'inventoryItems')));
+      plan.aendern.forEach(a => updateDoc(doc(db, 'inventoryItems', a.id), a.updates)
+        .catch(e => handleFirestoreError(e, OperationType.UPDATE, 'inventoryItems')));
+      plan.loeschen.forEach(id => deleteDoc(doc(db, 'inventoryItems', id))
+        .catch(e => handleFirestoreError(e, OperationType.DELETE, 'inventoryItems')));
+    }
+
+    const teile = [
+      plan.anlegen.length ? `${plan.anlegen.length} neu` : '',
+      plan.aendern.length ? `${plan.aendern.length} geändert` : '',
+      plan.loeschen.length ? `${plan.loeschen.length} entfernt` : '',
+      plan.ausgabenAnzahl ? `${plan.ausgabenAnzahl} gebuchte Ausgabe${plan.ausgabenAnzahl > 1 ? 'n' : ''} angepasst` : '',
+    ].filter(Boolean);
+    addLog(
+      `Gruppenbestellung bearbeitet: "${aktualisiert.name}"${teile.length ? ` (${teile.join(', ')})` : ''}`,
+      'workshop'
+    );
+  }, [groupOrders, inventoryItems, bikes, updateBike, addLog]);
+
   const addBike = useCallback((newBikeData: Partial<Bike>) => {
     const newBike: Bike = {
       id: Math.random().toString(36).substr(2, 9),
@@ -1596,6 +1649,7 @@ function App() {
               addInventoryItem={addInventoryItem}
               deleteInventoryItem={deleteInventoryItem}
               deleteGroupOrder={deleteGroupOrder}
+              updateGroupOrder={updateGroupOrder}
               onNavigateToWorkshop={(id) => {
                 setActiveWorkshopBikeId(id);
                 handleTabChange('workshop');

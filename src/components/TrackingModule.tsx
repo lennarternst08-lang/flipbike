@@ -20,6 +20,8 @@ import { formatCurrency, formatTime } from '../lib/utils';
 import { TrendingUp, Clock, Wallet, Plus, Search, Filter, ArrowUpDown, ArrowUp, ArrowDown, MoreVertical, Trash2, Edit2, Star, ChevronDown, ChevronUp, X, Check, FileCheck, Eye, EyeOff, Play, Pause, RotateCcw, Megaphone, Monitor, FileText, Wrench, Droplet, Tag, PiggyBank, CalendarClock, Repeat, MapPin } from 'lucide-react';
 import { ReceiptUploader } from './ReceiptUploader';
 import { BikeDetailsFields } from './BikeDetailsFields';
+import { GroupOrderModal } from './GroupOrderModal';
+import { GroupOrderDraftItem, buildDraftItems } from '../lib/groupOrders';
 import { emptyBikeDetails, openKaufvertragPrint } from '../lib/kaufvertrag';
 import {
   PUTZEN_COST, hasPutzen, togglePutzen,
@@ -100,6 +102,11 @@ interface TrackingModuleProps {
   addInventoryItem?: (item: Partial<InventoryItem>, module?: 'tracking' | 'workshop') => void;
   deleteInventoryItem: (id: string) => void;
   deleteGroupOrder?: (id: string) => void;
+  updateGroupOrder?: (
+    orderId: string,
+    daten: { name: string; totalPrice: number; date: string },
+    items: GroupOrderDraftItem[]
+  ) => string[] | void;
   onNavigateToWorkshop: (id: string) => void;
   initialScrollPos?: number;
   isTiedCapitalExpanded: boolean;
@@ -118,7 +125,8 @@ export function TrackingModule({
   addInventoryItem,
   deleteInventoryItem,
   deleteGroupOrder,
-  onNavigateToWorkshop, 
+  updateGroupOrder,
+  onNavigateToWorkshop,
   initialScrollPos,
   isTiedCapitalExpanded,
   setIsTiedCapitalExpanded,
@@ -1315,6 +1323,10 @@ export function TrackingModule({
   };
 
   const [selectedMonthAggregate, setSelectedMonthAggregate] = useState<string | null>(null);
+  // Gruppenbestellung nachträglich korrigieren. Der Entwurf startet aus dem Lager,
+  // rawBikes (nicht bikes) – im Liquidationsmodus sind dort hypothetische Räder drin.
+  const [editOrderId, setEditOrderId] = useState<string | null>(null);
+  const editOrder = groupOrders.find(o => o.id === editOrderId);
 
   const extractToStandaloneProject = (item: any) => {
     addBike({
@@ -2780,10 +2792,22 @@ export function TrackingModule({
                                                 <FileCheck className="w-4 h-4" />
                                              </button>
                                          )}
-                                         <button 
-                                            onClick={(e) => { 
+                                         {updateGroupOrder && (
+                                             <button
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    setEditOrderId(order.id);
+                                                }}
+                                                className="text-slate-400 hover:text-blue-400 transition-colors pointer-events-auto sm:ml-2"
+                                                title="Inhalt bearbeiten"
+                                             >
+                                                <Edit2 className="w-4 h-4" />
+                                             </button>
+                                         )}
+                                         <button
+                                            onClick={(e) => {
                                                 e.stopPropagation();
-                                                deleteGroupOrder && deleteGroupOrder(order.id) 
+                                                deleteGroupOrder && deleteGroupOrder(order.id)
                                             }}
                                             className="text-slate-400 hover:text-red-400 transition-colors pointer-events-auto sm:ml-2"
                                             title="Löschen"
@@ -2838,6 +2862,16 @@ export function TrackingModule({
             </div>
           </div>
         </div>
+      )}
+
+      {/* Gruppenbestellung nachträglich korrigieren */}
+      {editOrder && updateGroupOrder && (
+        <GroupOrderModal
+          order={editOrder}
+          initialItems={buildDraftItems(editOrder.id, inventoryItems, rawBikes)}
+          onSave={(daten, items) => updateGroupOrder(editOrder.id, daten, items)}
+          onClose={() => setEditOrderId(null)}
+        />
       )}
 
       {/* Sale Details Modal */}
