@@ -99,6 +99,13 @@ export interface KonvolutInfo {
   totalPrice: number;      // Gesamtpreis des Konvoluts (alle Räder zusammen)
   pickupMinutes: number;   // Abholdauer des gesamten Konvoluts in Minuten
   bikeCount: number;       // Anzahl Räder beim Anlegen – Basis der Aufteilung
+  /**
+   * Freitext zum gesamten Ankauf (Verkäufer, Zustand, Absprachen). Gilt für das
+   * Konvolut als Ganzes, nicht für ein einzelnes Rad – dafür gibt es `Bike.notes`.
+   * Liegt wie der Rest der Info gespiegelt an jedem Mitglied und geht in den
+   * KI-Report ein.
+   */
+  notes?: string;
 }
 
 export interface WorkLog {

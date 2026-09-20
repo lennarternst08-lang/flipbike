@@ -17,7 +17,7 @@ import {
   saveSettings,
 } from '../showroom/lib/storage';
 import type { ShowroomListing } from '../showroom/types';
-import { Bike, DailyTodo, Log, ServiceRequest, Receipt, InventoryItem, GroupOrder } from './types';
+import { Bike, DailyTodo, Log, ServiceRequest, Receipt, InventoryItem, GroupOrder, KonvolutInfo } from './types';
 import { sanitizeDetails } from './lib/kaufvertrag';
 import { buildAiReport, aiReportFileName } from './lib/aiReport';
 import { GroupOrderDraftItem, planGroupOrderUpdate } from './lib/groupOrders';
@@ -808,6 +808,30 @@ function App() {
     }
   }, [addLog, bikes, activeWorkshopBikeId]);
 
+  // Die Konvolut-Info liegt an jedem Mitglied gespiegelt (so verlangt es die
+  // Firestore-Regel, die keine eigene Collection zulaesst). Eine Aenderung muss
+  // deshalb alle Raeder der Gruppe treffen, sonst driften die Kopien auseinander
+  // und die Kopfzeile zeigt je nach Sortierung etwas anderes an.
+  const updateKonvolut = useCallback((konvolutId: string, patch: Partial<KonvolutInfo>) => {
+    const betroffen = bikes.filter(b => b.konvolut?.id === konvolutId);
+    if (betroffen.length === 0) return;
+
+    const neueInfo = { ...betroffen[0].konvolut!, ...patch };
+    setBikes(prev => prev.map(b => (b.konvolut?.id === konvolutId ? { ...b, konvolut: neueInfo, lastModified: Date.now() } : b)));
+
+    if (auth.currentUser) {
+      betroffen.forEach(b => updateDoc(doc(db, 'bikes', b.id), { konvolut: neueInfo, lastModified: Date.now() })
+        .catch(e => handleFirestoreError(e, OperationType.UPDATE, 'bikes')));
+    }
+
+    if (patch.notes !== undefined && patch.notes !== betroffen[0].konvolut?.notes) {
+      addLog(`Notiz am Konvolut "${neueInfo.name}" geaendert`, 'tracking', {
+        type: 'update',
+        data: { konvolutId, oldValues: { konvolut: betroffen[0].konvolut } },
+      });
+    }
+  }, [bikes, addLog]);
+
   // Ein Konvolut komplett entfernen. Bewusst nicht als Schleife über deleteBike:
   // das gaebe eine Log-Zeile je Rad, und jede davon könnte nur ihr eigenes Rad
   // zurückholen. So bleibt es ein Vorgang mit einem Rueckgaengig.
@@ -1206,6 +1230,17 @@ function App() {
           .catch(e => handleFirestoreError(e, OperationType.CREATE, 'bikes')));
       }
       setBikes(prev => [...raeder, ...prev.filter(b => !raeder.some(r => r.id === b.id))]);
+    } else if (type === 'update' && data?.konvolutId) {
+      // Konvolut-Aenderung: die alte Info auf alle Mitglieder zuruecksetzen.
+      const alt: KonvolutInfo | undefined = data.oldValues?.konvolut;
+      if (alt) {
+        const betroffen = bikes.filter(b => b.konvolut?.id === data.konvolutId);
+        setBikes(prev => prev.map(b => (b.konvolut?.id === data.konvolutId ? { ...b, konvolut: alt } : b)));
+        if (auth.currentUser) {
+          betroffen.forEach(b => updateDoc(doc(db, 'bikes', b.id), { konvolut: alt })
+            .catch(e => handleFirestoreError(e, OperationType.UPDATE, 'bikes')));
+        }
+      }
     } else if (type === 'update') {
       // Revert update: restore specific fields
       const bike = bikes.find(b => b.id === data.id);
@@ -1679,6 +1714,7 @@ function App() {
               addBike={addBike} 
               deleteBike={deleteBike}
               deleteKonvolut={deleteKonvolut}
+              updateKonvolut={updateKonvolut}
               addInventoryItem={addInventoryItem}
               deleteInventoryItem={deleteInventoryItem}
               deleteGroupOrder={deleteGroupOrder}

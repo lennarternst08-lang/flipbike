@@ -14,7 +14,7 @@
 
 import type { Bike, InventoryItem, GroupOrder, ServiceRequest, DailyTodo, Log } from '../types';
 
-export const AI_REPORT_VERSION = '1.2';
+export const AI_REPORT_VERSION = '1.3';
 
 export interface AiReportInput {
   bikes: Bike[];
@@ -86,6 +86,46 @@ export function buildAiReport(input: AiReportInput) {
   const geschTimeH = totalTimeh + flyerDurationH;
   const geschHw = geschTimeH > 0 ? profit / geschTimeH : 0;
 
+  // Konvolut-Ankaeufe: die Info haengt gespiegelt an jedem Mitglied, hier wird
+  // daraus wieder eine Gruppe. Die Kennzahlen entsprechen der Kopfzeile im
+  // Tracking: prof ist die Kassenlage des ganzen Ankaufs (Einnahmen minus
+  // kompletter Einkauf minus Material), nicht nur der Anteil verkaufter Raeder.
+  const konvolute = (() => {
+    const proId = new Map<string, Bike[]>();
+    for (const b of bikes) {
+      const id = b.konvolut?.id;
+      if (!id) continue;
+      const liste = proId.get(id);
+      if (liste) liste.push(b); else proId.set(id, [b]);
+    }
+    return [...proId.entries()].map(([id, mitglieder]) => {
+      const info = mitglieder[0].konvolut!;
+      const mat = mitglieder.reduce((s, b) => s + (b.expenses || []).reduce((x, e) => x + e.amount, 0), 0);
+      const bp = mitglieder.reduce((s, b) => s + b.purchasePrice, 0);
+      const sp = mitglieder.reduce((s, b) => s + (b.status === 'Verkauft' ? (b.sellingPrice || 0) : 0), 0);
+      const tz = mitglieder.reduce((s, b) => s + (b.timeSpentSeconds || 0), 0);
+      const sold = mitglieder.filter(b => b.status === 'Verkauft').length;
+      return {
+        id,
+        name: info.name,
+        price: round2(info.totalPrice),
+        pickupMin: info.pickupMinutes,
+        n0: info.bikeCount,
+        n: mitglieder.length,
+        sold,
+        bp: round2(bp),
+        mat: round2(mat),
+        sp: round2(sp),
+        prof: round2(sp - bp - mat),
+        tz,
+        hw: sold === mitglieder.length && tz > 0 ? round2((sp - bp - mat) / (tz / 3600)) : null,
+        dt: mitglieder.reduce((d, b) => (b.purchaseDate && b.purchaseDate < d ? b.purchaseDate : d), mitglieder[0].purchaseDate),
+        notes: info.notes && info.notes.trim() ? info.notes : '',
+        bikeIds: mitglieder.map(b => b.id),
+      };
+    });
+  })();
+
   return {
     _cfg: {
       v: AI_REPORT_VERSION,
@@ -103,8 +143,26 @@ export function buildAiReport(input: AiReportInput) {
         wl: 'workLogs (einzelne Arbeitszeiten): dt=timestamp, s=durationSeconds, n=note (frei beschriftbare Notiz zur Zeit)',
         rcv: 'receivedAt (Eingang)', lst: 'listedAt (inseriert am)', sld: 'soldAt (verkauft am)',
         acq: 'acquisitionSource: flyer=Flyer-Akquise, kleinanzeigen=Kleinanzeigen, null=unbekannt',
+        kv: 'Konvolut-ID (siehe kv[]), null = einzeln angekauft',
+        notes: 'Freitext zu DIESEM Rad (Konvolut-Notizen stehen getrennt in kv[].notes)',
+        todos: 'offene Checklistenpunkte des Rades (erledigte sind nicht enthalten)',
       },
       inv: { iq: 'initialQuantity', q: 'currentQuantity', c: 'pricePerUnit', oId: 'Group order id' },
+      kv: {
+        _: 'Konvolut-Ankauf: mehrere Raeder zu EINEM Gesamtpreis und EINER Abholfahrt. Preis und Abholzeit sind beim Anlegen gleichmaessig auf die Raeder verteilt, stecken also bereits in deren bp/tz. Nicht doppelt zaehlen.',
+        id: 'Konvolut-ID, referenziert von bikes[].kv',
+        name: 'Anzeigename, z.B. "Konvolut #1"',
+        price: 'Gesamtpreis des Konvoluts (= Summe bp der Mitglieder)',
+        pickupMin: 'Abholdauer des gesamten Ankaufs in Minuten (anteilig als workLog je Rad gebucht, steckt in tz)',
+        n0: 'Anzahl Raeder beim Anlegen', n: 'Anzahl heute noch vorhandener Mitglieder (kleiner als n0 = eins wurde geloescht)',
+        sold: 'davon verkauft',
+        bp: 'Summe Einkauf', mat: 'Summe Materialausgaben', sp: 'Summe realisierter Verkaufserloese', tz: 'Summe timeSpentSeconds',
+        prof: 'Kassenlage des Ankaufs = sp - bp - mat. Bewusst mit dem KOMPLETTEN Einkauf, auch wenn noch nicht alles verkauft ist (60 EUR gezahlt, 30 EUR zurueck => -30).',
+        hw: 'Stundenlohn der Gruppe, nur gesetzt wenn alle Raeder verkauft sind (sonst null)',
+        dt: 'fruehestes Ankaufsdatum der Gruppe',
+        notes: 'Freitext zum gesamten Ankauf (Verkaeufer, Zustand der Sammlung, Absprachen) - NICHT die Notiz eines einzelnen Rades, die steht in bikes[].notes',
+        bikeIds: 'IDs der Mitglieder in bikes[]',
+      },
       go: { c: 'totalCost', n: 'name', dt: 'date' },
       svcReq: { iss: 'issue', drop: 'dropoff', st: 'status' },
       logs: "Aktivitäts-/Zeitprotokoll (ts=timestamp ms, m=message inkl. 'Flyer verteilen'-Einträgen & Notizen, mod=module)",
@@ -120,7 +178,7 @@ export function buildAiReport(input: AiReportInput) {
       capInf: round2(infCap),
       lagerwert: round2(lagerwert),
       avgStandzeit: avgStandzeit !== null ? Math.round(avgStandzeit * 10) / 10 : null,
-      counts: { sold: soldBikes.length, active: activeBikes.length, all: bikes.length },
+      counts: { sold: soldBikes.length, active: activeBikes.length, all: bikes.length, konvolute: konvolute.length },
       kleinanzeigen: (() => {
         const kaExp = bikes.flatMap(b => (b.expenses || []).filter(e => e.category === 'kleinanzeigen'));
         return { ads: kaExp.length, cost: round2(kaExp.reduce((s, e) => s + e.amount, 0)) };
@@ -137,9 +195,11 @@ export function buildAiReport(input: AiReportInput) {
       lst: b.listedAt || null,
       sld: b.soldAt || null,
       acq: b.acquisitionSource || null,
+      kv: b.konvolut?.id || null,
       notes: b.notes,
       todos: (b.checklist || []).filter(c => !c.completed).map(c => c.text),
     })),
+    kv: konvolute,
     inv: inventoryItems.map(i => ({
       id: i.id, cat: i.category, name: i.name,
       iq: i.initialQuantity || i.quantity, q: i.quantity,

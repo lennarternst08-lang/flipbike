@@ -12,12 +12,12 @@ import {
   Filler
 } from 'chart.js';
 import { Bar, Line } from 'react-chartjs-2';
-import { Bike, BikeStatus, Receipt, InventoryItem, GroupOrder, WorkLog, FlyerLead } from '../types';
+import { Bike, BikeStatus, Receipt, InventoryItem, GroupOrder, WorkLog, FlyerLead, KonvolutInfo } from '../types';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { formatCurrency, formatTime } from '../lib/utils';
-import { TrendingUp, Clock, Wallet, Plus, Search, Filter, ArrowUpDown, ArrowUp, ArrowDown, MoreVertical, Trash2, Edit2, Star, ChevronDown, ChevronUp, X, Check, FileCheck, Eye, EyeOff, Play, Pause, RotateCcw, Megaphone, Monitor, FileText, Wrench, Droplet, Tag, PiggyBank, CalendarClock, Repeat, MapPin, Boxes, ChevronRight } from 'lucide-react';
+import { TrendingUp, Clock, Wallet, Plus, Search, Filter, ArrowUpDown, ArrowUp, ArrowDown, MoreVertical, Trash2, Edit2, Star, ChevronDown, ChevronUp, X, Check, FileCheck, Eye, EyeOff, Play, Pause, RotateCcw, Megaphone, Monitor, FileText, Wrench, Droplet, Tag, PiggyBank, CalendarClock, Repeat, MapPin, Boxes, ChevronRight, StickyNote } from 'lucide-react';
 import { ReceiptUploader } from './ReceiptUploader';
 import { BikeDetailsFields } from './BikeDetailsFields';
 import { GroupOrderModal } from './GroupOrderModal';
@@ -106,6 +106,8 @@ interface TrackingModuleProps {
   deleteBike: (id: string) => void;
   /** Löscht alle Räder eines Konvoluts als einen Vorgang (mit einem Rückgängig). */
   deleteKonvolut?: (konvolutId: string) => void;
+  /** Schreibt geänderte Konvolut-Daten auf alle Mitglieder der Gruppe. */
+  updateKonvolut?: (konvolutId: string, patch: Partial<KonvolutInfo>) => void;
   addInventoryItem?: (item: Partial<InventoryItem>, module?: 'tracking' | 'workshop') => void;
   deleteInventoryItem: (id: string) => void;
   deleteGroupOrder?: (id: string) => void;
@@ -130,6 +132,7 @@ export function TrackingModule({
   addBike, 
   deleteBike,
   deleteKonvolut,
+  updateKonvolut,
   addInventoryItem,
   deleteInventoryItem,
   deleteGroupOrder,
@@ -194,6 +197,9 @@ export function TrackingModule({
   // Offenes Drei-Punkte-Menue einer Konvolut-Kopfzeile (eigener State, weil
   // openMenuId auf Rad-IDs zeigt und beide gleichzeitig offen sein koennten).
   const [openKonvolutMenu, setOpenKonvolutMenu] = useState<string | null>(null);
+  // Notiz-Dialog zum gesamten Ankauf (nicht zu einem einzelnen Rad).
+  const [notizKonvolut, setNotizKonvolut] = useState<KonvolutInfo | null>(null);
+  const [notizText, setNotizText] = useState('');
   const istKonvolutOffen = (id: string) => konvolutOffen[id] ?? (tableViewMode === 'expanded');
   const toggleKonvolut = (id: string) =>
     setKonvolutOffen(prev => ({ ...prev, [id]: !(prev[id] ?? (tableViewMode === 'expanded')) }));
@@ -1699,6 +1705,23 @@ export function TrackingModule({
                       <p className="px-3 py-1.5 text-[10px] uppercase font-bold text-slate-500 tracking-wider">
                         {info.name}
                       </p>
+                      {updateKonvolut && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setNotizKonvolut(info);
+                            setNotizText(info.notes || '');
+                            setOpenKonvolutMenu(null);
+                          }}
+                          className="w-full text-left px-4 py-2 text-sm text-slate-300 hover:bg-slate-700 hover:text-white flex items-center"
+                        >
+                          <StickyNote className="w-3 h-3 mr-2" /> Notizen
+                          {info.notes && info.notes.trim() && (
+                            <span className="ml-auto w-1.5 h-1.5 rounded-full bg-amber-400" title="Notiz vorhanden" />
+                          )}
+                        </button>
+                      )}
+                      <div className="h-px bg-slate-700 my-1" />
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
@@ -1732,6 +1755,11 @@ export function TrackingModule({
                 </span>
               </div>
               <span className="block text-[10px] text-slate-500 leading-tight truncate">
+                {info.notes && info.notes.trim() && (
+                  <span title={info.notes}>
+                    <StickyNote className="w-3 h-3 inline-block text-amber-400 mr-1 -mt-0.5" />
+                  </span>
+                )}
                 {formatCurrency(info.totalPrice)} Konvolutpreis
                 {info.pickupMinutes > 0 && ` · ${info.pickupMinutes} min Abholung anteilig verbucht`}
               </span>
@@ -3081,6 +3109,57 @@ export function TrackingModule({
             </div>
             <div className="p-4 border-t border-slate-800 bg-slate-900/50 flex justify-end">
                 <Button onClick={() => setSelectedMonthAggregate(null)} variant="outline">Schließen</Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Notiz zum gesamten Konvolut – landet auch im KI-Report */}
+      {notizKonvolut && updateKonvolut && (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4">
+          <div className="w-full max-w-lg bg-slate-900 border border-slate-800 rounded-xl shadow-2xl overflow-hidden flex flex-col">
+            <div className="flex items-center justify-between p-4 border-b border-slate-800">
+              <h2 className="text-lg font-bold text-amber-400 flex items-center gap-2 min-w-0">
+                <StickyNote className="w-5 h-5 shrink-0" />
+                <span className="truncate">Notizen – {notizKonvolut.name}</span>
+              </h2>
+              <button
+                onClick={() => setNotizKonvolut(null)}
+                className="p-1 rounded-md text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition-colors shrink-0"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-5 space-y-3">
+              <p className="text-xs text-slate-500">
+                Gilt für den ganzen Ankauf, nicht für ein einzelnes Rad – z.B. Verkäufer, Zustand
+                der Sammlung, Absprachen. Steht mit allen Konvolut-Werten im KI-Report.
+              </p>
+              <textarea
+                value={notizText}
+                onChange={(e) => setNotizText(e.target.value)}
+                autoFocus
+                placeholder="z.B. Kelleraufösung, alles jahrelang gestanden. Verkäufer sagt, zwei Räder liefen zuletzt noch."
+                className="w-full h-44 rounded-xl bg-slate-800/60 border border-slate-700 p-3 text-sm text-slate-200 placeholder:text-slate-500 focus:outline-none focus:border-amber-500/60 focus:ring-2 focus:ring-amber-500/30 resize-none"
+              />
+            </div>
+            <div className="p-4 border-t border-slate-800 bg-slate-900/80 flex gap-3">
+              <Button
+                variant="outline"
+                className="flex-1 border-slate-700 text-slate-300 hover:bg-slate-800"
+                onClick={() => setNotizKonvolut(null)}
+              >
+                Abbrechen
+              </Button>
+              <Button
+                className="flex-1 bg-amber-600 hover:bg-amber-500 text-white font-medium"
+                onClick={() => {
+                  updateKonvolut(notizKonvolut.id, { notes: notizText.trim() });
+                  setNotizKonvolut(null);
+                }}
+              >
+                Speichern
+              </Button>
             </div>
           </div>
         </div>
