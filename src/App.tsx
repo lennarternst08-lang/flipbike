@@ -369,6 +369,18 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { hasError: boole
 
 type TabKey = 'tracking' | 'workshop' | 'daily' | 'receipts' | 'showroom';
 
+// Löst ein Firestore-`increment(n)`-Sentinel für den lokalen State auf. Der Operand
+// steckt je nach SDK-Version in einem anders benannten (minifizierten) Feld, deshalb
+// wird der erste Zahlenwert des Objekts genommen statt ein fester Feldname.
+// Rückgabe null = kein Sentinel, der Wert kann unverändert übernommen werden.
+function resolveIncrement(wert: unknown, basis: number): number | null {
+  if (!wert || typeof wert !== 'object') return null;
+  const methode = String((wert as any)._methodName ?? '');
+  if (!methode.includes('increment')) return null;
+  const operand = Object.values(wert as Record<string, unknown>).find(v => typeof v === 'number');
+  return typeof operand === 'number' ? basis + operand : null;
+}
+
 function App() {
   const [activeTab, setActiveTab] = useState<TabKey>('tracking');
   const [trackingScrollPos, setTrackingScrollPos] = useState(0);
@@ -741,41 +753,13 @@ function App() {
         addLog(message, module, { type: 'update', data: { id, oldValues } });
       }
       
-      // Prepare local state update (handle increment for local state)
-      const localUpdates = { ...updates };
-      if (updates.timeSpentSeconds && typeof updates.timeSpentSeconds === 'object' && 'methodName' in (updates.timeSpentSeconds as any)) {
-        // This is likely a FieldValue.increment
-        // We can't easily get the value from it, so we'll assume the caller might have passed it differently
-        // Actually, let's check for a common pattern or just calculate it if we can.
-        // For now, let's just use the numeric value if the caller passed it as a number, 
-        // but since we want to use increment for DB, we'll have to be clever.
-      }
-
-      const updatedBike = { ...bike, ...updates, lastModified: Date.now() };
-      
-      // If timeSpentSeconds is an increment, we need to calculate the new local value
-      if (updates.timeSpentSeconds && typeof updates.timeSpentSeconds === 'object') {
-        // Firestore FieldValue objects don't expose their value easily in the SDK, 
-        // but we can try to detect it.
-        // A better way is to pass the numeric diff in a separate field or just handle it here.
-        // Since we know we use increment(n), we can't easily get 'n'.
-      }
-
-      // Let's simplify: if the update is an increment, we'll just let the snapshot handle it 
-      // or we can pass the numeric value for local state.
-      
-      // Actually, I'll just change how WorkshopModule calls it.
-      // But wait, I already changed WorkshopModule.
-      
-      // Let's fix updateBike to be smarter.
+      // Die Werkstatt schickt Zeitänderungen als Firestore-Sentinel `increment(n)`.
+      // Für den lokalen State muss daraus wieder eine Zahl werden – sonst steht das
+      // Sentinel-Objekt in `timeSpentSeconds` und die Stundenanzeige wird NaN. Ohne
+      // Login kommt auch kein Snapshot, der das nachträglich geradezieht.
       const finalLocalUpdates = { ...updates };
-      // Check for increment (hacky but works for local optimistic update)
-      if (updates.timeSpentSeconds && typeof updates.timeSpentSeconds === 'object' && (updates.timeSpentSeconds as any)._methodName === 'FieldValue.increment') {
-          const operand = (updates.timeSpentSeconds as any)._operand;
-          if (typeof operand === 'number') {
-              finalLocalUpdates.timeSpentSeconds = (bike.timeSpentSeconds || 0) + operand;
-          }
-      }
+      const aufgeloest = resolveIncrement(updates.timeSpentSeconds, bike.timeSpentSeconds || 0);
+      if (aufgeloest !== null) finalLocalUpdates.timeSpentSeconds = aufgeloest;
 
       const localUpdatedBike = { ...bike, ...finalLocalUpdates, lastModified: Date.now() };
       
@@ -966,7 +950,9 @@ function App() {
     );
   }, [groupOrders, inventoryItems, bikes, updateBike, addLog]);
 
-  const addBike = useCallback((newBikeData: Partial<Bike>) => {
+  // `stumm` unterdrückt nur den Log-Eintrag: beim Konvolut-Ankauf entstehen mehrere
+  // Räder auf einmal, dafür schreibt der Aufrufer eine einzige Sammelzeile.
+  const addBike = useCallback((newBikeData: Partial<Bike>, optionen?: { stumm?: boolean }) => {
     const newBike: Bike = {
       id: Math.random().toString(36).substr(2, 9),
       name: newBikeData.name || 'Neues Fahrrad',
@@ -976,19 +962,22 @@ function App() {
       sellingPrice: newBikeData.sellingPrice || null,
       saleDate: newBikeData.saleDate || null,
       targetSellingPrice: newBikeData.targetSellingPrice || null,
-      timeSpentSeconds: 0,
+      timeSpentSeconds: newBikeData.timeSpentSeconds || 0,
       lastModified: Date.now(),
       receivedAt: newBikeData.receivedAt || newBikeData.purchaseDate || new Date().toISOString().split('T')[0],
       listedAt: newBikeData.listedAt || null,
       soldAt: newBikeData.soldAt || null,
       expenses: [],
       checklist: [],
+      workLogs: newBikeData.workLogs || [],
       notes: newBikeData.notes || '',
       photos: [],
       details: sanitizeDetails(newBikeData.details), // immer definiert (kein undefined → Firestore-sicher)
       userId: auth.currentUser?.uid,
       acquisitionSource: newBikeData.acquisitionSource || undefined
     };
+    // Nur setzen, wenn es das Rad wirklich betrifft – undefined würde Firestore ablehnen.
+    if (newBikeData.konvolut) newBike.konvolut = newBikeData.konvolut;
     
     // Optimistically update local state
     setBikes(prev => [newBike, ...prev]);
@@ -998,7 +987,9 @@ function App() {
         console.error("Failed to add bike to DB:", e);
       });
     }
-    addLog(`Fahrrad hinzugefügt: "${newBike.name}"`, 'tracking', { type: 'add', data: newBike.id });
+    if (!optionen?.stumm) {
+      addLog(`Fahrrad hinzugefügt: "${newBike.name}"`, 'tracking', { type: 'add', data: newBike.id });
+    }
     // Rückgabe, damit der Aufrufer das neue Rad direkt mit einem Flyer-Lead verknüpfen kann.
     return newBike;
   }, [addLog]);

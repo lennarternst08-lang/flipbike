@@ -17,11 +17,16 @@ import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { formatCurrency, formatTime } from '../lib/utils';
-import { TrendingUp, Clock, Wallet, Plus, Search, Filter, ArrowUpDown, ArrowUp, ArrowDown, MoreVertical, Trash2, Edit2, Star, ChevronDown, ChevronUp, X, Check, FileCheck, Eye, EyeOff, Play, Pause, RotateCcw, Megaphone, Monitor, FileText, Wrench, Droplet, Tag, PiggyBank, CalendarClock, Repeat, MapPin } from 'lucide-react';
+import { TrendingUp, Clock, Wallet, Plus, Search, Filter, ArrowUpDown, ArrowUp, ArrowDown, MoreVertical, Trash2, Edit2, Star, ChevronDown, ChevronUp, X, Check, FileCheck, Eye, EyeOff, Play, Pause, RotateCcw, Megaphone, Monitor, FileText, Wrench, Droplet, Tag, PiggyBank, CalendarClock, Repeat, MapPin, Boxes, ChevronRight } from 'lucide-react';
 import { ReceiptUploader } from './ReceiptUploader';
 import { BikeDetailsFields } from './BikeDetailsFields';
 import { GroupOrderModal } from './GroupOrderModal';
 import { GroupOrderDraftItem, buildDraftItems } from '../lib/groupOrders';
+import { KonvolutModal } from './KonvolutModal';
+import {
+  KonvolutDraft, KonvolutGruppe, KonvolutZeile, buildKonvolutBikes, konvolutSumme,
+  konvolutZeilen, standardKonvolutName,
+} from '../lib/konvolut';
 import { emptyBikeDetails, openKaufvertragPrint } from '../lib/kaufvertrag';
 import {
   PUTZEN_COST, hasPutzen, togglePutzen,
@@ -97,7 +102,7 @@ interface TrackingModuleProps {
   groupOrders?: GroupOrder[];
   receipts?: Receipt[];
   updateBike: (id: string, updates: Partial<Bike>) => void;
-  addBike: (bike: Partial<Bike>) => Bike | void;
+  addBike: (bike: Partial<Bike>, optionen?: { stumm?: boolean }) => Bike | void;
   deleteBike: (id: string) => void;
   addInventoryItem?: (item: Partial<InventoryItem>, module?: 'tracking' | 'workshop') => void;
   deleteInventoryItem: (id: string) => void;
@@ -177,6 +182,18 @@ export function TrackingModule({
 
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [showAddDetails, setShowAddDetails] = useState(false); // Kaufvertrag-Details im Add-Dialog ein/ausklappen
+
+  // Konvolut-Ankauf: eigener Dialog, wird aus dem Hinzufügen-Dialog heraus geöffnet.
+  const [isKonvolutModalOpen, setIsKonvolutModalOpen] = useState(false);
+  // Aufgeklappte Konvolute in der Tabelle. Nur Abweichungen vom Standard landen hier:
+  // in der Schnellansicht bleibt eine Gruppe zu, in der erweiterten Ansicht ist sie offen.
+  const [konvolutOffen, setKonvolutOffen] = useState<Record<string, boolean>>({});
+  const istKonvolutOffen = (id: string) => konvolutOffen[id] ?? (tableViewMode === 'expanded');
+  const toggleKonvolut = (id: string) =>
+    setKonvolutOffen(prev => ({ ...prev, [id]: !(prev[id] ?? (tableViewMode === 'expanded')) }));
+  // Beim Wechsel der Ansicht gilt wieder der Standard – sonst bliebe eine in der
+  // erweiterten Ansicht zugeklappte Gruppe auch in der Schnellansicht "manuell zu".
+  React.useEffect(() => { setKonvolutOffen({}); }, [tableViewMode]);
 
   // Erweiterung #3: Selektions-Scorecard (Ankauf-Entscheidungshilfe)
   const [isScorecardOpen, setIsScorecardOpen] = useState(false);
@@ -519,6 +536,42 @@ export function TrackingModule({
       acquisitionSource: 'flyer',
       details: emptyBikeDetails()
     });
+  };
+
+  // Konvolut-Ankauf: aus einem Gesamtpreis und einer Abholdauer entstehen mehrere
+  // ganz normale Räder. Preis und Abholzeit sind beim Anlegen schon auf sie verteilt
+  // (siehe lib/konvolut), die Werkstatt bucht danach pro Rad weiter Zeit dazu.
+  const handleKonvolutSubmit = (draft: KonvolutDraft, adresse: { strasse: string; plz: string }) => {
+    const konvolutId = `kv_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+    const entwuerfe = buildKonvolutBikes(draft, konvolutId);
+    if (entwuerfe.length === 0) return;
+
+    const angelegt: Bike[] = [];
+    for (const entwurf of entwuerfe) {
+      const created = addBike(entwurf, { stumm: true });
+      if (created) angelegt.push(created);
+    }
+
+    addLog(
+      `Konvolut "${draft.name}" angelegt: ${entwuerfe.length} Räder für ${formatCurrency(draft.totalPrice)}` +
+        (draft.pickupMinutes > 0 ? ` (+ ${draft.pickupMinutes} min Abholung, anteilig verbucht)` : ''),
+      'tracking'
+    );
+
+    // Ein Lead für die gemeinsame Abholadresse. Bewusst nacheinander: das erste Rad
+    // legt den Lead an, die folgenden hängen sich per arrayUnion an denselben an.
+    if (adresse.strasse && draft.acquisitionSource !== 'kleinanzeigen' && angelegt.length > 0) {
+      (async () => {
+        for (const bike of angelegt) {
+          await linkBikeToAddress(bike, adresse.strasse, adresse.plz);
+        }
+      })().catch((e) => {
+        console.error(e);
+        addLog(`Lead für "${draft.name}" konnte nicht angelegt werden.`, 'tracking');
+      });
+    }
+
+    setIsKonvolutModalOpen(false);
   };
 
   // Adresse nachträglich zu einem bestehenden Rad erfassen (Drei-Punkte-Menü).
@@ -1585,6 +1638,118 @@ export function TrackingModule({
       ? { bg: 'bg-yellow-500/10', border: 'border-yellow-500/40', text: 'text-yellow-400', label: 'Grenzwertig – genau prüfen' }
       : { bg: 'bg-red-500/10', border: 'border-red-500/40', text: 'text-red-400', label: 'Schwach – eher ablehnen' };
 
+  // Zeilen der Inventar-Tabelle. Räder aus einem Konvolut stehen nicht einzeln in
+  // der Liste, sondern unter einer gemeinsamen, aufklappbaren Kopfzeile – die
+  // Gruppe sitzt dabei an der Position ihres bestplatzierten Rades, damit die
+  // gewählte Sortierung erhalten bleibt.
+  const tableRows: KonvolutZeile[] = React.useMemo(() => {
+    const zeilen: KonvolutZeile[] = [];
+    for (const zeile of konvolutZeilen(filteredBikes)) {
+      zeilen.push(zeile);
+      if (zeile.kind === 'konvolut' && istKonvolutOffen(zeile.gruppe.info.id)) {
+        for (const b of zeile.gruppe.bikes) zeilen.push({ kind: 'bike', bike: b, imKonvolut: true });
+      }
+    }
+    return zeilen;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filteredBikes, konvolutOffen, tableViewMode]);
+
+  // Kopfzeile eines Konvoluts: dieselben Spalten wie eine Radzeile, nur summiert.
+  const renderKonvolutRow = (gruppe: KonvolutGruppe) => {
+    const { info, bikes: mitglieder } = gruppe;
+    const summe = konvolutSumme(mitglieder);
+    const offen = istKonvolutOffen(info.id);
+    const quelle = mitglieder.every(b => b.acquisitionSource === mitglieder[0].acquisitionSource)
+      ? mitglieder[0].acquisitionSource
+      : undefined;
+
+    return (
+      <tr
+        key={info.id}
+        onClick={() => toggleKonvolut(info.id)}
+        className="group border-b border-amber-500/25 bg-amber-500/[0.06] hover:bg-amber-500/[0.11] transition-colors cursor-pointer"
+      >
+        <td className="px-2 py-2 sticky left-0 z-20 border-r border-slate-700/50 min-w-[140px] bg-slate-900 group-hover:bg-slate-800 shadow-[inset_4px_0_0_rgba(245,158,11,0.75)]">
+          <div className="flex items-center gap-1.5">
+            <span className="p-1 text-amber-400 shrink-0">
+              {offen ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+            </span>
+            <Boxes className="w-4 h-4 text-amber-400 shrink-0" />
+            {/* Feste Obergrenze, sonst zieht die Untertitelzeile die klebende
+                Namensspalte auf Handy-Breite über die nächste Spalte. */}
+            <div className="min-w-0 max-w-[150px] md:max-w-[280px]">
+              <div className="flex items-center gap-1.5">
+                <span className="text-xs md:text-sm font-semibold text-amber-200 truncate">{info.name}</span>
+                <span className="shrink-0 bg-amber-500/20 text-amber-300 text-[9px] px-1.5 py-0.5 rounded border border-amber-500/40 uppercase tracking-wider font-bold whitespace-nowrap">
+                  {summe.anzahl} {summe.anzahl === 1 ? 'Rad' : 'Räder'}
+                </span>
+              </div>
+              <span className="block text-[10px] text-slate-500 leading-tight truncate">
+                {formatCurrency(info.totalPrice)} Konvolutpreis
+                {info.pickupMinutes > 0 && ` · ${info.pickupMinutes} min Abholung anteilig verbucht`}
+              </span>
+            </div>
+          </div>
+        </td>
+        <td className="px-1 py-2 text-center w-8">
+          {quelle === 'flyer' && (
+            <span title="Flyer-Akquise"><Megaphone className="w-3.5 h-3.5 text-emerald-400 inline-block" /></span>
+          )}
+          {quelle === 'kleinanzeigen' && (
+            <span title="Kleinanzeigen"><Monitor className="w-3.5 h-3.5 text-blue-400 inline-block" /></span>
+          )}
+        </td>
+        <td className="px-1 py-2 w-8"></td>
+        <td className="px-1 py-2 w-8"></td>
+        <td className="px-2 py-2">
+          <span className={`inline-block h-8 leading-8 px-2 rounded-md text-xs font-medium whitespace-nowrap ${
+            summe.verkauft === summe.anzahl ? 'bg-emerald-500/20 text-emerald-400' : 'bg-amber-500/20 text-amber-300'
+          }`}>
+            {summe.verkauft}/{summe.anzahl} verkauft
+          </span>
+        </td>
+        <td className="px-2 py-2">
+          <span className="text-slate-400 px-2 text-xs whitespace-nowrap">
+            {summe.ankaufsDatum ? format(parseISO(summe.ankaufsDatum), 'dd.MM.yyyy') : '-'}
+          </span>
+        </td>
+        <td className="px-2 py-2">
+          <span className="text-slate-200 px-2 font-medium">{formatCurrency(summe.einkauf)}</span>
+        </td>
+        {tableViewMode === 'expanded' && (
+          <td className="px-2 py-2"><span className="text-slate-300 px-2">{formatCurrency(summe.material)}</span></td>
+        )}
+        {tableViewMode === 'expanded' && (
+          <td className="px-2 py-2"><span className="text-slate-300 px-2">{(summe.sekunden / 3600).toFixed(1)}h</span></td>
+        )}
+        {tableViewMode === 'expanded' && (
+          <td className="px-2 py-2">
+            <span className="text-slate-300 px-2">{summe.zielVk > 0 ? formatCurrency(summe.zielVk) : '-'}</span>
+          </td>
+        )}
+        <td className="px-2 py-2"><span className="text-slate-600 px-2">-</span></td>
+        {tableViewMode === 'expanded' && (
+          <td className="px-2 py-2"><span className="text-slate-600 px-2">-</span></td>
+        )}
+        <td className="px-2 py-2">
+          <span className="text-slate-200 px-2 font-medium">{summe.verkauf > 0 ? formatCurrency(summe.verkauf) : '-'}</span>
+        </td>
+        <td className={`px-2 py-2 font-medium ${
+          summe.stundenlohn !== null ? (summe.stundenlohn >= 15 ? 'text-emerald-400' : 'text-red-400') : 'text-slate-400'
+        }`}>
+          {summe.stundenlohn !== null
+            ? `${formatCurrency(summe.stundenlohn)}/h`
+            : <span className="text-slate-600" title="Erst wenn alle Räder des Konvoluts verkauft sind">-</span>}
+        </td>
+        <td className={`px-2 py-2 font-medium ${
+          summe.profit !== null && summe.profit > 0 ? 'text-emerald-400' : summe.profit !== null && summe.profit < 0 ? 'text-red-400' : 'text-slate-400'
+        }`}>
+          {summe.profit !== null ? formatCurrency(summe.profit) : '-'}
+        </td>
+      </tr>
+    );
+  };
+
   return (
     <div className={`space-y-6 pb-20 md:pb-0 transition-opacity ${isReady ? 'duration-300 opacity-100' : 'duration-0 opacity-0'}`}>
       {/* Inventory List (Moved to top) */}
@@ -1744,7 +1909,10 @@ export function TrackingModule({
                 </tr>
               </thead>
               <tbody>
-                {filteredBikes.map((bike) => {
+                {tableRows.map((zeile) => {
+                  if (zeile.kind === 'konvolut') return renderKonvolutRow(zeile.gruppe);
+                  const bike = zeile.bike;
+                  const imKonvolut = zeile.imKonvolut;
                   const expenses = bike.expenses.reduce((sum, exp) => sum + exp.amount, 0);
                   const profit = bike.status === 'Verkauft' 
                     ? (bike.sellingPrice || 0) - bike.purchasePrice - expenses
@@ -1763,7 +1931,7 @@ export function TrackingModule({
                   const isStale = bike.status === 'Inseriert' && !!bike.listedAt && differenceInDays(new Date(), parseISO(bike.listedAt)) > 7;
 
                   return (
-                    <tr key={bike.id} className={`group border-b border-slate-800 transition-colors ${
+                    <tr key={bike.id} className={`group border-b transition-colors ${imKonvolut ? 'border-amber-500/10 bg-amber-500/[0.025]' : 'border-slate-800'} ${
                       bike._isHypothetical ? 'bg-orange-950/20 hover:bg-orange-900/30 border-orange-900/50' :
                       isBigWin
                         ? 'bg-yellow-500/5 hover:bg-yellow-500/10' 
@@ -1775,7 +1943,9 @@ export function TrackingModule({
                           ? 'bg-slate-900 group-hover:bg-slate-800 shadow-[inset_4px_0_0_rgba(234,179,8,0.5)]' 
                           : 'bg-slate-900 group-hover:bg-slate-800'
                       }`}>
-                        <div className="flex items-center space-x-1 relative w-full">
+                        <div className={`flex items-center space-x-1 relative w-full ${
+                          imKonvolut ? 'ml-1.5 pl-2 border-l-2 border-amber-500/40' : ''
+                        }`}>
                           {!bike.id.startsWith('monthly-mat-') && (
                             <>
                               <button 
@@ -2864,6 +3034,15 @@ export function TrackingModule({
         </div>
       )}
 
+      {/* Konvolut-Ankauf: mehrere Räder aus einem Gesamtpreis */}
+      {isKonvolutModalOpen && (
+        <KonvolutModal
+          defaultName={standardKonvolutName(rawBikes)}
+          onSave={handleKonvolutSubmit}
+          onClose={() => setIsKonvolutModalOpen(false)}
+        />
+      )}
+
       {/* Gruppenbestellung nachträglich korrigieren */}
       {editOrder && updateGroupOrder && (
         <GroupOrderModal
@@ -2997,6 +3176,23 @@ export function TrackingModule({
               <CardTitle>{newBikeData.status === 'Material' ? 'Neues Material hinzufügen' : newBikeData.status === 'Infrastruktur' ? 'Neue Infrastruktur hinzufügen' : 'Neues Fahrrad hinzufügen'}</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
+              {/* Einzelposten oder Konvolut? Das Konvolut hat einen eigenen Dialog,
+                  weil dort ein Gesamtpreis auf mehrere Räder aufgeteilt wird. */}
+              <div className="flex bg-slate-800 p-1 rounded-lg border border-slate-700">
+                <button
+                  type="button"
+                  className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md bg-orange-500 text-white shadow"
+                >
+                  <Plus className="w-3.5 h-3.5" /> Einzelposten
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setIsAddModalOpen(false); setShowAddDetails(false); setIsKonvolutModalOpen(true); }}
+                  className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md text-slate-400 hover:text-slate-200 transition-colors"
+                >
+                  <Boxes className="w-3.5 h-3.5" /> Konvolut-Ankauf
+                </button>
+              </div>
               <div className="space-y-2">
                 <label className="text-sm font-medium text-slate-400">Name / Modell</label>
                 <Input 

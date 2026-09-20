@@ -85,6 +85,22 @@ export interface BikeDetails {
   ruecksendekosten?: string;     // konkreter Schätzbetrag; fehlt er, trägt sie der Verkäufer
 }
 
+/**
+ * Konvolut-Ankauf: mehrere Räder, die in einem Rutsch für einen Gesamtpreis
+ * geholt wurden. Die Aufteilung auf die einzelnen Räder passiert beim Anlegen
+ * (Preis und Abholzeit je zu gleichen Teilen), danach lebt jedes Rad für sich.
+ * Dieses Objekt hängt – wie `showroom` – am Fahrrad-Dokument selbst, weil sich
+ * die Firestore-Regeln nicht neu ausrollen lassen und `isValidBike` Zusatzfelder
+ * erlaubt (hasAll, nicht hasOnly). Der gemeinsame Schlüssel ist `id`.
+ */
+export interface KonvolutInfo {
+  id: string;
+  name: string;            // z.B. "Konvolut #1"
+  totalPrice: number;      // Gesamtpreis des Konvoluts (alle Räder zusammen)
+  pickupMinutes: number;   // Abholdauer des gesamten Konvoluts in Minuten
+  bikeCount: number;       // Anzahl Räder beim Anlegen – Basis der Aufteilung
+}
+
 export interface WorkLog {
   id: string;
   timestamp: string;
@@ -133,6 +149,8 @@ export interface Bike {
    * `photos` – im Anzeigen-Objekt ist `photos` deshalb immer leer.
    */
   showroom?: ShowroomListing;
+  /** Gesetzt, wenn das Rad aus einem Konvolut-Ankauf stammt. */
+  konvolut?: KonvolutInfo;
   hiddenInWorkshop?: boolean;
   userId?: string;
   isStandalone?: boolean;

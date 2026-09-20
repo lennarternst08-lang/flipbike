@@ -55,11 +55,17 @@ export function WorkshopModule({ bikes, inventoryItems, groupOrders = [], receip
     bike.name.toLowerCase().includes(searchQuery.toLowerCase())
   );
   
+  // Neu wählen, wenn keine ID gesetzt ist – oder wenn die gemerkte ID ins Leere
+  // zeigt, weil das Rad gelöscht wurde. Ohne die zweite Bedingung bleibt die
+  // Werkstatt dauerhaft auf "Keine aktiven Projekte" stehen, denn die ID überlebt
+  // in localStorage. Geprüft wird gegen `bikes`, nicht gegen die aktive Liste:
+  // ein verkauftes Rad soll wie bisher geöffnet bleiben dürfen.
   useEffect(() => {
-    if (!activeBikeId && filteredProjects.length > 0) {
+    const zeigtInsLeere = !!activeBikeId && !bikes.some(b => b.id === activeBikeId);
+    if ((!activeBikeId || zeigtInsLeere) && filteredProjects.length > 0) {
       setActiveBikeId(filteredProjects[0].id);
     }
-  }, [filteredProjects, activeBikeId, setActiveBikeId]);
+  }, [filteredProjects, activeBikeId, setActiveBikeId, bikes]);
 
   const activeBike = bikes.find((b) => b.id === activeBikeId);
 
