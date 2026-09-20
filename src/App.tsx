@@ -808,6 +808,30 @@ function App() {
     }
   }, [addLog, bikes, activeWorkshopBikeId]);
 
+  // Ein Konvolut komplett entfernen. Bewusst nicht als Schleife über deleteBike:
+  // das gaebe eine Log-Zeile je Rad, und jede davon könnte nur ihr eigenes Rad
+  // zurückholen. So bleibt es ein Vorgang mit einem Rueckgaengig.
+  const deleteKonvolut = useCallback((konvolutId: string) => {
+    const betroffen = bikes.filter(b => b.konvolut?.id === konvolutId);
+    if (betroffen.length === 0) return;
+    const name = betroffen[0].konvolut?.name || 'Konvolut';
+
+    addLog(
+      `Konvolut "${name}" gelöscht: ${betroffen.length} ${betroffen.length === 1 ? 'Rad' : 'Räder'}`,
+      'tracking',
+      { type: 'delete', data: betroffen.map(b => ({ ...b })) }
+    );
+
+    const ids = betroffen.map(b => b.id);
+    setBikes(prev => prev.filter(b => !ids.includes(b.id)));
+
+    if (auth.currentUser) {
+      ids.forEach(id => deleteDoc(doc(db, 'bikes', id))
+        .catch(e => handleFirestoreError(e, OperationType.DELETE, 'bikes')));
+    }
+    if (activeWorkshopBikeId && ids.includes(activeWorkshopBikeId)) setActiveWorkshopBikeId(null);
+  }, [bikes, addLog, activeWorkshopBikeId]);
+
   // Material im Materialinventar anlegen (lokal + Firestore, analog zu addBike)
   const addInventoryItem = useCallback((data: Partial<InventoryItem>, module: 'tracking' | 'workshop' = 'workshop') => {
     const quantity = data.quantity && data.quantity > 0 ? data.quantity : 1;
@@ -1163,20 +1187,25 @@ function App() {
 
     const { type, data } = log.revertAction;
 
+    // `data` darf eine einzelne ID / ein einzelnes Rad sein oder eine Liste davon:
+    // ein Konvolut entsteht und verschwindet als Ganzes und wird auch so zurückgenommen.
     if (type === 'add') {
-      // Revert add: delete the bike
+      // Revert add: delete the bike(s)
+      const ids: string[] = Array.isArray(data) ? data : [data];
       if (auth.currentUser) {
-        deleteDoc(doc(db, 'bikes', data)).catch(e => handleFirestoreError(e, OperationType.DELETE, 'bikes'));
-      } else {
-        setBikes(prev => prev.filter(b => b.id !== data));
+        ids.forEach(bikeId => deleteDoc(doc(db, 'bikes', bikeId))
+          .catch(e => handleFirestoreError(e, OperationType.DELETE, 'bikes')));
       }
+      setBikes(prev => prev.filter(b => !ids.includes(b.id)));
+      if (activeWorkshopBikeId && ids.includes(activeWorkshopBikeId)) setActiveWorkshopBikeId(null);
     } else if (type === 'delete') {
-      // Revert delete: restore the bike
+      // Revert delete: restore the bike(s)
+      const raeder: Bike[] = Array.isArray(data) ? data : [data];
       if (auth.currentUser) {
-        setDoc(doc(db, 'bikes', data.id), { ...data, userId: auth.currentUser.uid }).catch(e => handleFirestoreError(e, OperationType.CREATE, 'bikes'));
-      } else {
-        setBikes(prev => [data, ...prev]);
+        raeder.forEach(r => setDoc(doc(db, 'bikes', r.id), { ...r, userId: auth.currentUser!.uid })
+          .catch(e => handleFirestoreError(e, OperationType.CREATE, 'bikes')));
       }
+      setBikes(prev => [...raeder, ...prev.filter(b => !raeder.some(r => r.id === b.id))]);
     } else if (type === 'update') {
       // Revert update: restore specific fields
       const bike = bikes.find(b => b.id === data.id);
@@ -1649,6 +1678,7 @@ function App() {
               updateBike={updateBike} 
               addBike={addBike} 
               deleteBike={deleteBike}
+              deleteKonvolut={deleteKonvolut}
               addInventoryItem={addInventoryItem}
               deleteInventoryItem={deleteInventoryItem}
               deleteGroupOrder={deleteGroupOrder}

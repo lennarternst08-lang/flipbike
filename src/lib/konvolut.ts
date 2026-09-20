@@ -163,23 +163,29 @@ export interface KonvolutSumme {
   sekunden: number;
   zielVk: number;
   verkauf: number;
-  /** null, solange noch kein Rad der Gruppe verkauft ist. */
-  profit: number | null;
+  /**
+   * Die aktuelle Kassenlage des Konvoluts: alles Eingenommene minus alles
+   * Ausgegebene. Anders als bei einem einzelnen Rad steht hier bewusst von
+   * Anfang an eine Zahl – das Konvolut wurde als Ganzes bezahlt, also ist das
+   * Geld auch als Ganzes raus. Mit 60 € Einkauf und einem verkauften Rad für
+   * 30 € sind das -30 €, nicht +21,43 €. Die Einzelzeilen bleiben davon
+   * unberührt und zeigen bis zum Verkauf weiterhin "-".
+   */
+  profit: number;
   stundenlohn: number | null;
   verkauft: number;
   ankaufsDatum: string;
 }
 
-/** Kennzahlen der Gruppe – dieselben Formeln wie in der Einzelzeile, nur summiert. */
+/** Kennzahlen der Gruppe. */
 export function konvolutSumme(bikes: Bike[]): KonvolutSumme {
   const summe: KonvolutSumme = {
     anzahl: bikes.length,
     einkauf: 0, material: 0, sekunden: 0, zielVk: 0, verkauf: 0,
-    profit: null, stundenlohn: null, verkauft: 0,
+    profit: 0, stundenlohn: null, verkauft: 0,
     ankaufsDatum: bikes[0]?.purchaseDate || '',
   };
 
-  let profit = 0;
   for (const b of bikes) {
     const material = (b.expenses || []).reduce((s, e) => s + e.amount, 0);
     summe.einkauf += b.purchasePrice;
@@ -189,18 +195,17 @@ export function konvolutSumme(bikes: Bike[]): KonvolutSumme {
     if (b.status === 'Verkauft') {
       summe.verkauft += 1;
       summe.verkauf += b.sellingPrice || 0;
-      profit += (b.sellingPrice || 0) - b.purchasePrice - material;
     }
     if (b.purchaseDate && b.purchaseDate < summe.ankaufsDatum) summe.ankaufsDatum = b.purchaseDate;
   }
 
-  if (summe.verkauft > 0) {
-    summe.profit = profit;
-    // Stundenlohn erst, wenn alles verkauft ist: solange noch Räder offen sind,
-    // stünde der volle Zeitaufwand einem Teil-Erlös gegenüber und sähe schlecht aus.
-    if (summe.verkauft === summe.anzahl && summe.sekunden > 0) {
-      summe.stundenlohn = profit / (summe.sekunden / 3600);
-    }
+  // Der komplette Einsatz zählt, nicht nur der Anteil der verkauften Räder.
+  summe.profit = summe.verkauf - summe.einkauf - summe.material;
+
+  // Stundenlohn erst, wenn alles verkauft ist: vorher stünde der volle
+  // Zeitaufwand einem Teil-Erlös gegenüber und die Zahl wäre wertlos.
+  if (summe.verkauft === summe.anzahl && summe.anzahl > 0 && summe.sekunden > 0) {
+    summe.stundenlohn = summe.profit / (summe.sekunden / 3600);
   }
   return summe;
 }

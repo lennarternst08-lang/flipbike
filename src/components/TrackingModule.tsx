@@ -104,6 +104,8 @@ interface TrackingModuleProps {
   updateBike: (id: string, updates: Partial<Bike>) => void;
   addBike: (bike: Partial<Bike>, optionen?: { stumm?: boolean }) => Bike | void;
   deleteBike: (id: string) => void;
+  /** Löscht alle Räder eines Konvoluts als einen Vorgang (mit einem Rückgängig). */
+  deleteKonvolut?: (konvolutId: string) => void;
   addInventoryItem?: (item: Partial<InventoryItem>, module?: 'tracking' | 'workshop') => void;
   deleteInventoryItem: (id: string) => void;
   deleteGroupOrder?: (id: string) => void;
@@ -127,6 +129,7 @@ export function TrackingModule({
   updateBike, 
   addBike, 
   deleteBike,
+  deleteKonvolut,
   addInventoryItem,
   deleteInventoryItem,
   deleteGroupOrder,
@@ -188,6 +191,9 @@ export function TrackingModule({
   // Aufgeklappte Konvolute in der Tabelle. Nur Abweichungen vom Standard landen hier:
   // in der Schnellansicht bleibt eine Gruppe zu, in der erweiterten Ansicht ist sie offen.
   const [konvolutOffen, setKonvolutOffen] = useState<Record<string, boolean>>({});
+  // Offenes Drei-Punkte-Menue einer Konvolut-Kopfzeile (eigener State, weil
+  // openMenuId auf Rad-IDs zeigt und beide gleichzeitig offen sein koennten).
+  const [openKonvolutMenu, setOpenKonvolutMenu] = useState<string | null>(null);
   const istKonvolutOffen = (id: string) => konvolutOffen[id] ?? (tableViewMode === 'expanded');
   const toggleKonvolut = (id: string) =>
     setKonvolutOffen(prev => ({ ...prev, [id]: !(prev[id] ?? (tableViewMode === 'expanded')) }));
@@ -552,10 +558,13 @@ export function TrackingModule({
       if (created) angelegt.push(created);
     }
 
+    // Mit den IDs aller neuen Räder als revertAction: ein Klick auf "Rückgängig"
+    // im Log nimmt das komplette Konvolut zurück, nicht nur ein einzelnes Rad.
     addLog(
       `Konvolut "${draft.name}" angelegt: ${entwuerfe.length} Räder für ${formatCurrency(draft.totalPrice)}` +
         (draft.pickupMinutes > 0 ? ` (+ ${draft.pickupMinutes} min Abholung, anteilig verbucht)` : ''),
-      'tracking'
+      'tracking',
+      { type: 'add', data: angelegt.map(b => b.id) }
     );
 
     // Ein Lead für die gemeinsame Abholadresse. Bewusst nacheinander: das erste Rad
@@ -1669,8 +1678,46 @@ export function TrackingModule({
         onClick={() => toggleKonvolut(info.id)}
         className="group border-b border-amber-500/25 bg-amber-500/[0.06] hover:bg-amber-500/[0.11] transition-colors cursor-pointer"
       >
-        <td className="px-2 py-2 sticky left-0 z-20 border-r border-slate-700/50 min-w-[140px] bg-slate-900 group-hover:bg-slate-800 shadow-[inset_4px_0_0_rgba(245,158,11,0.75)]">
-          <div className="flex items-center gap-1.5">
+        <td className={`px-2 py-2 sticky left-0 ${openKonvolutMenu === info.id ? 'z-50' : 'z-20'} border-r border-slate-700/50 min-w-[140px] bg-slate-900 group-hover:bg-slate-800 shadow-[inset_4px_0_0_rgba(245,158,11,0.75)]`}>
+          <div className="flex items-center gap-1.5 relative">
+            {deleteKonvolut && (
+              <>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setOpenKonvolutMenu(openKonvolutMenu === info.id ? null : info.id);
+                  }}
+                  className="p-1 text-slate-400 hover:text-slate-200 hover:bg-slate-700 rounded-md transition-colors shrink-0"
+                  title="Konvolut-Menue"
+                >
+                  <MoreVertical className="w-4 h-4" />
+                </button>
+                {openKonvolutMenu === info.id && (
+                  <>
+                    <div className="fixed inset-0 z-0" onClick={(e) => { e.stopPropagation(); setOpenKonvolutMenu(null); }} />
+                    <div className="absolute left-0 top-8 z-10 w-60 bg-slate-800 border border-slate-700 rounded-md shadow-lg py-1">
+                      <p className="px-3 py-1.5 text-[10px] uppercase font-bold text-slate-500 tracking-wider">
+                        {info.name}
+                      </p>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          const namen = mitglieder.map(b => b.name).join(', ');
+                          const sicher = window.confirm(
+                            `"${info.name}" mit ${mitglieder.length} ${mitglieder.length === 1 ? 'Rad' : 'Rädern'} löschen?\n\n${namen}\n\nRückgängig machen geht danach über das Log.`
+                          );
+                          setOpenKonvolutMenu(null);
+                          if (sicher) deleteKonvolut(info.id);
+                        }}
+                        className="w-full text-left px-4 py-2 text-sm text-red-400 hover:bg-slate-700 hover:text-red-300 flex items-center"
+                      >
+                        <Trash2 className="w-3 h-3 mr-2" /> Konvolut löschen ({mitglieder.length})
+                      </button>
+                    </div>
+                  </>
+                )}
+              </>
+            )}
             <span className="p-1 text-amber-400 shrink-0">
               {offen ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
             </span>
@@ -1741,10 +1788,15 @@ export function TrackingModule({
             ? `${formatCurrency(summe.stundenlohn)}/h`
             : <span className="text-slate-600" title="Erst wenn alle Räder des Konvoluts verkauft sind">-</span>}
         </td>
-        <td className={`px-2 py-2 font-medium ${
-          summe.profit !== null && summe.profit > 0 ? 'text-emerald-400' : summe.profit !== null && summe.profit < 0 ? 'text-red-400' : 'text-slate-400'
-        }`}>
-          {summe.profit !== null ? formatCurrency(summe.profit) : '-'}
+        <td
+          className={`px-2 py-2 font-medium ${
+            summe.profit > 0 ? 'text-emerald-400' : summe.profit < 0 ? 'text-red-400' : 'text-slate-400'
+          }`}
+          title={`Eingenommen ${formatCurrency(summe.verkauf)} − Einkauf ${formatCurrency(summe.einkauf)}`
+            + (summe.material > 0 ? ` − Material ${formatCurrency(summe.material)}` : '')
+            + ' — der komplette Konvolutpreis zählt, auch wenn noch nicht alle Räder verkauft sind.'}
+        >
+          {formatCurrency(summe.profit)}
         </td>
       </tr>
     );
