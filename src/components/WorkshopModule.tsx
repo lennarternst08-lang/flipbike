@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { formatTime, formatCurrency } from '../lib/utils';
-import { Play, Pause, RotateCcw, Plus, Camera, CheckSquare, Wrench, Trash2, CheckCircle2, Circle, Undo2, Search, Eye, X, Clock, Package, Minus, Folders, Folder, FileText, Check, Sparkles, Droplet } from 'lucide-react';
+import { Play, Pause, RotateCcw, Plus, Camera, CheckSquare, Wrench, Trash2, CheckCircle2, Circle, Undo2, Search, Eye, X, Clock, Package, Minus, Folders, Folder, FileText, Check, Sparkles, Droplet, Timer } from 'lucide-react';
 import { increment, doc, updateDoc, setDoc, deleteDoc } from 'firebase/firestore';
 import { db, auth } from '../firebase';
 import { ReceiptUploader } from './ReceiptUploader';
@@ -14,6 +14,9 @@ import { GroupOrderDraftItem } from '../lib/groupOrders';
 import { WageScenarios } from './WageScenarios';
 import { sanitizeDetails, openKaufvertragPrint, detailsCompleteness } from '../lib/kaufvertrag';
 import { PUTZEN_COST, PUTZEN_LABEL, hasPutzen, togglePutzen } from '../lib/expenses';
+import { WorkshopStopwatchMode } from './WorkshopStopwatchMode';
+import { lagerTeile, neueAusgabe } from '../lib/werkstatt';
+import { clearActiveTimer, readActiveTimer, sitzungSekunden } from '../lib/stopwatch';
 
 interface WorkshopModuleProps {
   bikes: Bike[];
@@ -34,6 +37,9 @@ interface WorkshopModuleProps {
 export function WorkshopModule({ bikes, inventoryItems, groupOrders = [], receipts = [], updateBike, syncBikeTime, activeBikeId, setActiveBikeId, addLog, addInventoryItem, deleteInventoryItem, addGroupOrder, deleteGroupOrder }: WorkshopModuleProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [showInventory, setShowInventory] = useState(false);
+  // Der Stoppuhr-Modus ersetzt die gewohnte Ansicht nur voruebergehend; die
+  // bestehende Werkstatt bleibt unveraendert daneben bestehen.
+  const [stopwatchMode, setStopwatchMode] = useState(false);
 
   const activeProjects = bikes
     .filter((b) => {
@@ -234,6 +240,10 @@ export function WorkshopModule({ bikes, inventoryItems, groupOrders = [], receip
       localStorage.removeItem('flipbike_active_timer');
 
       try {
+        // Laufmarkierung sofort lokal loesen: angemeldet setzt erst der Snapshot
+        // `startTime` auf null, bis dahin zeigten Stoppuhr-Modus und Tracking-
+        // Tabelle das Rad faelschlich als laufend an.
+        updateBike(activeBike.id, { startTime: null });
         // Use atomic sync for time to avoid multi-device conflicts
         // This function handles both the Firestore update (atomic) and the local state update (optimistic)
         syncBikeTime(activeBike.id, elapsed, newWorkLog);
@@ -246,6 +256,31 @@ export function WorkshopModule({ bikes, inventoryItems, groupOrders = [], receip
         // But we already updated the local state via updateBike (if it's optimistic).
       }
     } else {
+      // Laeuft gerade die Uhr eines ANDEREN Rades (z.B. im Stoppuhr-Modus
+      // gestartet), erst dort sauber stoppen und die Zeit sichern. Ohne diesen
+      // Schritt ueberschreibt der Start hier den Eintrag in localStorage und die
+      // gelaufene Sitzung des anderen Rades waere ersatzlos verloren.
+      const fremd = readActiveTimer();
+      if (fremd && fremd.bikeId !== activeBike.id) {
+        const anderes = bikes.find(b => b.id === fremd.bikeId);
+        if (anderes) {
+          const sekunden = sitzungSekunden(anderes, fremd);
+          clearActiveTimer();
+          if (sekunden > 0) {
+            syncBikeTime(anderes.id, sekunden, {
+              id: Math.random().toString(36).substr(2, 9),
+              timestamp: new Date().toISOString(),
+              durationSeconds: sekunden,
+            });
+            addLog(`Automatisch pausiert: "${anderes.name}" (Wechsel auf "${activeBike.name}"). Dauer: ${formatTime(sekunden)}.`, 'stopwatch');
+          } else {
+            updateBike(anderes.id, { startTime: null });
+          }
+        } else {
+          clearActiveTimer();
+        }
+      }
+
       // Start timer
       setIsRunning(true);
       const now = Date.now();
@@ -496,12 +531,7 @@ export function WorkshopModule({ bikes, inventoryItems, groupOrders = [], receip
   // Verbrauchsmaterial wird direkt als Kosten erfasst und taucht hier nicht auf.
   const [materialSearch, setMaterialSearch] = useState('');
 
-  const filteredMaterials = inventoryItems.filter(i => {
-    if (i.quantity <= 0) return false;
-    if (i.category !== 'part') return false;
-    if (materialSearch && !i.name.toLowerCase().includes(materialSearch.toLowerCase())) return false;
-    return true;
-  });
+  const filteredMaterials = lagerTeile(inventoryItems, materialSearch);
 
   const handleAddGroupOrderSubmit = (
       daten: { name: string; totalPrice: number; date: string },
@@ -544,6 +574,21 @@ export function WorkshopModule({ bikes, inventoryItems, groupOrders = [], receip
      updateDoc(docRef, { quantity: increment(incrementValue) });
      addLog(`Materialbestand für "${currentItemName}" ${incrementValue > 0 ? 'erhöht' : 'reduziert'} um ${Math.abs(incrementValue)}`, 'workshop');
   };
+
+  // Vor allen anderen Zweigen, damit der Modus auch ohne aktives Rad erreichbar
+  // bleibt (die Uebersicht kann selbst leer sein und sagt das dann).
+  if (stopwatchMode) {
+    return (
+      <WorkshopStopwatchMode
+        projekte={filteredProjects}
+        inventoryItems={inventoryItems}
+        updateBike={updateBike}
+        syncBikeTime={syncBikeTime}
+        addLog={addLog}
+        onClose={() => setStopwatchMode(false)}
+      />
+    );
+  }
 
   if (showInventory) {
     const parts = inventoryItems.filter(i => i.category === 'part');
@@ -820,9 +865,14 @@ export function WorkshopModule({ bikes, inventoryItems, groupOrders = [], receip
       <div className="flex flex-col items-center justify-center h-64 text-slate-400">
         <Wrench className="w-12 h-12 mb-4 opacity-50" />
         <p>Keine aktiven Projekte in der Werkstatt.</p>
-        <Button variant="outline" className="mt-4" onClick={() => setShowInventory(true)}>
-             <Package className="w-4 h-4 mr-2" /> Materialinventar
-        </Button>
+        <div className="flex gap-2 mt-4">
+          <Button variant="outline" onClick={() => setStopwatchMode(true)}>
+               <Timer className="w-4 h-4 mr-2" /> Stoppuhr-Modus
+          </Button>
+          <Button variant="outline" onClick={() => setShowInventory(true)}>
+               <Package className="w-4 h-4 mr-2" /> Materialinventar
+          </Button>
+        </div>
       </div>
     );
   }
@@ -864,8 +914,14 @@ export function WorkshopModule({ bikes, inventoryItems, groupOrders = [], receip
               className="pl-10 bg-slate-900/50 border-slate-800 focus:ring-orange-500/50"
             />
           </div>
-          <Button variant="outline" className="ml-4" onClick={() => setShowInventory(true)}>
-             <Package className="w-4 h-4 mr-2" /> <span className="hidden sm:inline">Inventar</span>
+          <Button
+            className="ml-2 sm:ml-4 bg-orange-500 hover:bg-orange-600 text-white touch-manipulation"
+            onClick={() => setStopwatchMode(true)}
+          >
+             <Timer className="w-4 h-4 sm:mr-2" /> <span className="hidden sm:inline">Stoppuhr-Modus</span>
+          </Button>
+          <Button variant="outline" className="ml-2" onClick={() => setShowInventory(true)}>
+             <Package className="w-4 h-4 sm:mr-2" /> <span className="hidden sm:inline">Inventar</span>
           </Button>
         </div>
 
@@ -1253,15 +1309,8 @@ export function WorkshopModule({ bikes, inventoryItems, groupOrders = [], receip
                                       return;
                                     }
                                     // 1. Add expense
-                                    const newExpense: Expense = {
-                                      id: Math.random().toString(36).substr(2, 9),
-                                      description: item.name,
-                                      amount: item.pricePerUnit,
-                                      date: new Date().toISOString(),
-                                      sourceInventoryId: item.id
-                                    };
                                     updateBike(activeBike.id, {
-                                      expenses: [...activeBike.expenses, newExpense],
+                                      expenses: [...activeBike.expenses, neueAusgabe(item.name, item.pricePerUnit, item.id)],
                                     });
                                     // 2. Decrement inventory
                                     const itemRef = doc(db, 'inventoryItems', item.id);

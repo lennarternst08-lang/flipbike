@@ -1095,13 +1095,25 @@ function App() {
 
   const syncBikeTime = useCallback((id: string, elapsedSeconds: number, newWorkLog: any) => {
     if (auth.currentUser) {
+      // Atomar über increment/arrayUnion: zwei Geräte dürfen sich beim Stoppen
+      // nicht überschreiben. Der Snapshot spielt das Ergebnis zurück.
       updateDoc(doc(db, 'bikes', id), {
         timeSpentSeconds: increment(elapsedSeconds),
         workLogs: arrayUnion(newWorkLog),
         startTime: null,
         lastModified: Date.now()
       }).catch(e => handleFirestoreError(e, OperationType.UPDATE, 'bikes-time'));
+      return;
     }
+    // Ohne Login gibt es keinen Snapshot, der die Zeit zurückspielt – ohne diesen
+    // Zweig wäre die gerade gestoppte Sitzung ersatzlos weg.
+    setBikes(prev => prev.map(b => b.id === id ? {
+      ...b,
+      timeSpentSeconds: (b.timeSpentSeconds || 0) + elapsedSeconds,
+      workLogs: [...(b.workLogs || []), newWorkLog],
+      startTime: null,
+      lastModified: Date.now(),
+    } : b));
   }, []);
 
   const forceSyncToCloud = useCallback(async () => {
