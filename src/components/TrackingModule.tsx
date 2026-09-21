@@ -200,6 +200,22 @@ export function TrackingModule({
   // Offenes Drei-Punkte-Menue einer Konvolut-Kopfzeile (eigener State, weil
   // openMenuId auf Rad-IDs zeigt und beide gleichzeitig offen sein koennten).
   const [openKonvolutMenu, setOpenKonvolutMenu] = useState<string | null>(null);
+
+  // "Gruppiert" an: Konvolut-Räder stehen unter ihrer Kopfzeile. Aus (Standard): jedes
+  // Rad steht einzeln an seinem richtigen Sortierplatz und trägt ein Abzeichen, das
+  // die Bilanz der Gruppe zeigt. Gruppiert lässt sich nicht korrekt nach Status,
+  // Ankauf oder EK sortieren – die Gruppe kann nur an EINER Stelle stehen.
+  // Wird pro Gerät gemerkt; fehlt der Speicher (privates Fenster), gilt der Standard.
+  const [konvolutGruppiert, setKonvolutGruppiertRoh] = useState<boolean>(() => {
+    try { return localStorage.getItem('flipbike_konvolutGruppiert') === '1'; } catch { return false; }
+  });
+  const setKonvolutGruppiert = (an: boolean) => {
+    setKonvolutGruppiertRoh(an);
+    try { localStorage.setItem('flipbike_konvolutGruppiert', an ? '1' : '0'); } catch {}
+  };
+  // Welche Zeile ihr Konvolut-Popover offen hat (Rad-ID, nicht Konvolut-ID: dasselbe
+  // Konvolut steht ungruppiert in mehreren Zeilen).
+  const [konvolutPopover, setKonvolutPopover] = useState<string | null>(null);
   // Notiz-Dialog zum gesamten Ankauf (nicht zu einem einzelnen Rad).
   const [notizKonvolut, setNotizKonvolut] = useState<KonvolutInfo | null>(null);
   // Konvolut im Bearbeiten-Dialog. Nur die ID merken, die Gruppe wird unten stets
@@ -1664,6 +1680,9 @@ export function TrackingModule({
   // Gruppe sitzt dabei an der Position ihres bestplatzierten Rades, damit die
   // gewählte Sortierung erhalten bleibt.
   const tableRows: KonvolutZeile[] = React.useMemo(() => {
+    if (!konvolutGruppiert) {
+      return filteredBikes.map(b => ({ kind: 'bike' as const, bike: b, imKonvolut: false }));
+    }
     const zeilen: KonvolutZeile[] = [];
     for (const zeile of konvolutZeilen(filteredBikes)) {
       zeilen.push(zeile);
@@ -1673,7 +1692,7 @@ export function TrackingModule({
     }
     return zeilen;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filteredBikes, konvolutOffen, tableViewMode]);
+  }, [filteredBikes, konvolutOffen, tableViewMode, konvolutGruppiert]);
 
   // Gruppe für den Bearbeiten-Dialog IMMER aus rawBikes, nie aus filteredBikes: ein
   // aktiver Filter blendet sonst Mitglieder aus, und die würden beim Speichern als
@@ -1699,6 +1718,61 @@ export function TrackingModule({
     if (!lead) return;
     await updateDoc(doc(db, 'flyerHouses', lead.id), { bikeIds: arrayUnion(...neueIds) });
     addLog(`${neueIds.length === 1 ? 'Neues Rad' : `${neueIds.length} neue Räder`} mit Lead "${lead.name || lead.address}" verknüpft.`, 'tracking');
+  };
+
+  // Abzeichen für ungruppierte Konvolut-Räder. Die Bilanz rechnet über ALLE Mitglieder
+  // (nicht nur die vom Filter sichtbaren) – es ist die Kassenlage des ganzen Ankaufs.
+  const renderKonvolutAbzeichen = (bike: Bike) => {
+    const info = bike.konvolut!;
+    const kurz = /#\d+/.exec(info.name)?.[0] ?? info.name;
+    const offen = konvolutPopover === bike.id;
+    const mitglieder = offen ? bikes.filter(b => b.konvolut?.id === info.id) : [];
+    const summe = offen ? konvolutSumme(mitglieder) : null;
+    return (
+      <>
+        <button
+          onClick={(e) => { e.stopPropagation(); setKonvolutPopover(offen ? null : bike.id); }}
+          title={`Gehört zu ${info.name} – klicken für die Bilanz`}
+          className="ml-1.5 shrink-0 flex items-center gap-1 bg-amber-500/15 text-amber-300 hover:bg-amber-500/25 text-[10px] font-bold px-1.5 py-0.5 rounded border border-amber-500/40 whitespace-nowrap transition-colors"
+        >
+          <Boxes className="w-3 h-3" />{kurz}
+        </button>
+        {offen && summe && (
+          <>
+            <div className="fixed inset-0 z-0" onClick={(e) => { e.stopPropagation(); setKonvolutPopover(null); }} />
+            <div className="absolute left-0 top-8 z-10 w-64 bg-slate-800 border border-amber-500/40 rounded-lg shadow-xl p-3 space-y-2 text-xs">
+              <div className="flex items-center gap-1.5 font-semibold text-amber-200 text-sm">
+                <Boxes className="w-4 h-4 text-amber-400" />
+                <span className="truncate">{info.name}</span>
+              </div>
+              <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-slate-400">
+                <span>Verkauft</span><span className="text-right text-slate-200">{summe.verkauft}/{summe.anzahl}</span>
+                <span>Einkauf</span><span className="text-right text-slate-200">{formatCurrency(summe.einkauf)}</span>
+                {summe.material > 0 && (<><span>Material</span><span className="text-right text-slate-200">{formatCurrency(summe.material)}</span></>)}
+                <span>Erlös</span><span className="text-right text-slate-200">{formatCurrency(summe.verkauf)}</span>
+                <span>Zeit</span><span className="text-right text-slate-200">{(summe.sekunden / 3600).toFixed(1)} h</span>
+                <span className="font-semibold text-slate-300">Bilanz</span>
+                <span className={`text-right font-bold ${summe.profit > 0 ? 'text-emerald-400' : summe.profit < 0 ? 'text-red-400' : 'text-slate-300'}`}>
+                  {formatCurrency(summe.profit)}
+                </span>
+                {summe.stundenlohn !== null && (<><span>Stundenlohn</span><span className="text-right text-slate-200">{formatCurrency(summe.stundenlohn)}/h</span></>)}
+              </div>
+              {info.notes && info.notes.trim() && (
+                <p className="text-slate-400 border-t border-slate-700 pt-2 line-clamp-3 flex gap-1.5">
+                  <StickyNote className="w-3 h-3 mt-0.5 shrink-0 text-amber-400" />{info.notes}
+                </p>
+              )}
+              <button
+                onClick={(e) => { e.stopPropagation(); setKonvolutPopover(null); setKonvolutGruppiert(true); }}
+                className="w-full mt-1 py-1.5 rounded-md bg-amber-600 hover:bg-amber-500 text-white font-medium transition-colors"
+              >
+                Gruppiert anzeigen
+              </button>
+            </div>
+          </>
+        )}
+      </>
+    );
   };
 
   // Kopfzeile eines Konvoluts: dieselben Spalten wie eine Radzeile, nur summiert.
@@ -1921,6 +1995,21 @@ export function TrackingModule({
                 Erweitert
               </button>
             </div>
+            {rawBikes.some(b => b.konvolut) && (
+              <button
+                onClick={() => { setKonvolutGruppiert(!konvolutGruppiert); setKonvolutPopover(null); }}
+                title={konvolutGruppiert
+                  ? 'Konvolute als Gruppe – klicken, um alle Räder einzeln und korrekt sortiert zu zeigen'
+                  : 'Alle Räder einzeln sortiert – klicken, um Konvolute als Gruppe zu zeigen'}
+                className={`h-9 px-3 mr-2 flex items-center gap-1.5 text-xs font-medium rounded-lg border transition-colors ${
+                  konvolutGruppiert
+                    ? 'bg-amber-500/15 border-amber-500/50 text-amber-300'
+                    : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <Boxes className="w-3.5 h-3.5" /> Gruppiert
+              </button>
+            )}
             <div className="relative">
               <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-slate-500" />
               <Input
@@ -2071,7 +2160,7 @@ export function TrackingModule({
                         ? 'bg-yellow-500/5 hover:bg-yellow-500/10' 
                         : 'hover:bg-slate-800/30'
                     }`}>
-                      <td className={`px-2 py-2 sticky left-0 ${openMenuId === bike.id ? 'z-50' : 'z-20'} transition-colors border-r border-slate-700/50 min-w-[140px] ${
+                      <td className={`px-2 py-2 sticky left-0 ${openMenuId === bike.id || konvolutPopover === bike.id ? 'z-50' : 'z-20'} transition-colors border-r border-slate-700/50 min-w-[140px] ${
                         bike._isHypothetical ? 'bg-orange-950/40 group-hover:bg-orange-900/40' :
                         isBigWin 
                           ? 'bg-slate-900 group-hover:bg-slate-800 shadow-[inset_4px_0_0_rgba(234,179,8,0.5)]' 
@@ -2254,6 +2343,7 @@ export function TrackingModule({
                               <span className="text-[9px] text-orange-400/80 font-semibold uppercase tracking-wider mt-0.5 block">Hypothetisch (-&gt; {formatCurrency(bike.sellingPrice || 0)})</span>
                             )}
                           </button>
+                          {!konvolutGruppiert && bike.konvolut && renderKonvolutAbzeichen(bike)}
                         </div>
                       </td>
                       <td className="px-1 py-2 text-center w-8">
