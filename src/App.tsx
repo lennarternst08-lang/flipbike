@@ -21,6 +21,7 @@ import { Bike, DailyTodo, Log, ServiceRequest, Receipt, InventoryItem, GroupOrde
 import { sanitizeDetails } from './lib/kaufvertrag';
 import { buildAiReport, aiReportFileName } from './lib/aiReport';
 import { GroupOrderDraftItem, planGroupOrderUpdate } from './lib/groupOrders';
+import { KonvolutEditDraft, planKonvolutUpdate } from './lib/konvolut';
 import { BarChart3, Wrench, CheckSquare, Download, FileText, Image, User, X, LogIn, LogOut, RotateCcw, Calendar, RefreshCw, CloudUpload, Store } from 'lucide-react';
 import { auth, db, signInWithGoogle, logout } from './firebase';
 import { onAuthStateChanged } from 'firebase/auth';
@@ -1002,7 +1003,9 @@ function App() {
   // Räder auf einmal, dafür schreibt der Aufrufer eine einzige Sammelzeile.
   const addBike = useCallback((newBikeData: Partial<Bike>, optionen?: { stumm?: boolean }) => {
     const newBike: Bike = {
-      id: Math.random().toString(36).substr(2, 9),
+      // Vorgegebene ID nur beim Konvolut-Bearbeiten: dort muss die Vorschau im Dialog
+      // exakt die Cent-Verteilung zeigen, die gespeichert wird, und das Undo die IDs kennen.
+      id: newBikeData.id || Math.random().toString(36).substr(2, 9),
       name: newBikeData.name || 'Neues Fahrrad',
       status: newBikeData.status || 'Zu reparieren',
       purchasePrice: newBikeData.purchasePrice || 0,
@@ -1041,6 +1044,54 @@ function App() {
     // Rückgabe, damit der Aufrufer das neue Rad direkt mit einem Flyer-Lead verknüpfen kann.
     return newBike;
   }, [addLog]);
+
+  // Nachträgliche Korrektur eines Konvoluts: Gesamtpreis, Abholdauer, Räderliste.
+  // Läuft bewusst NICHT über updateBike – das schriebe je Rad eine eigene Log-Zeile
+  // mit eigenem Rückgängig, und ein einzeln zurückgenommener Anteil zerrisse die
+  // Verteilung (Summe EK ≠ Konvolutpreis). Stattdessen: ein Schreibvorgang, eine
+  // Log-Zeile, ein Rückgängig über den kompletten Vorher-Zustand der Gruppe.
+  const updateKonvolutGruppe = useCallback((
+    konvolutId: string,
+    entwurf: KonvolutEditDraft
+  ): string[] | void => {
+    const mitglieder = bikes.filter(b => b.konvolut?.id === konvolutId);
+    if (mitglieder.length === 0) return ['Dieses Konvolut gibt es nicht mehr.'];
+
+    const plan = planKonvolutUpdate(mitglieder, entwurf);
+    if (plan.fehler.length > 0) return plan.fehler;
+    // Nichts zu tun → kein Schreibvorgang und vor allem keine Log-Zeile.
+    if (!plan.neu.length && !plan.aendern.length && !plan.loeschen.length) return;
+
+    const jetzt = Date.now();
+    plan.neu.forEach(n => addBike(n, { stumm: true }));
+
+    const weg = new Set(plan.loeschen.map(b => b.id));
+    const patch = new Map(plan.aendern.map(a => [a.id, a.updates]));
+    setBikes(prev => prev
+      .filter(b => !weg.has(b.id))
+      .map(b => (patch.has(b.id) ? { ...b, ...patch.get(b.id)!, lastModified: jetzt } : b)));
+
+    if (auth.currentUser) {
+      plan.aendern.forEach(a => updateDoc(doc(db, 'bikes', a.id), { ...a.updates, lastModified: jetzt })
+        .catch(e => handleFirestoreError(e, OperationType.UPDATE, 'bikes')));
+      plan.loeschen.forEach(b => deleteDoc(doc(db, 'bikes', b.id))
+        .catch(e => handleFirestoreError(e, OperationType.DELETE, 'bikes')));
+    }
+    if (activeWorkshopBikeId && weg.has(activeWorkshopBikeId)) setActiveWorkshopBikeId(null);
+
+    // Geänderte Räder nur mit den berührten Feldern: Fotos liegen als base64 im
+    // Dokument, vollständige Kopien könnten das 1-MiB-Limit des Log-Dokuments reißen.
+    addLog(`Konvolut "${plan.info.name}" bearbeitet: ${plan.zusammenfassung}`, 'tracking', {
+      type: 'konvolut',
+      data: {
+        konvolutId,
+        wiederherstellen: plan.loeschen,
+        zuruecksetzen: plan.aendern.map(a => ({ id: a.id, oldValues: a.oldValues })),
+        entfernen: plan.neu.map(n => n.id!),
+      },
+    });
+  }, [bikes, addBike, addLog, activeWorkshopBikeId]);
+
 
   const addTodo = useCallback((text: string, linkedBikeId?: string) => {
     const newTodo: DailyTodo = {
@@ -1230,6 +1281,29 @@ function App() {
           .catch(e => handleFirestoreError(e, OperationType.CREATE, 'bikes')));
       }
       setBikes(prev => [...raeder, ...prev.filter(b => !raeder.some(r => r.id === b.id))]);
+    } else if (type === 'konvolut') {
+      // Eine Konvolut-Bearbeitung kommt nur als Ganzes zurück. Achtung: wer danach
+      // Werkstattzeit gebucht hat, verliert sie hier, weil oldValues.workLogs die
+      // Liste ersetzt – das gilt für jedes Undo in dieser App gleichermaßen.
+      const wieder: Bike[] = Array.isArray(data?.wiederherstellen) ? data.wiederherstellen : [];
+      const zurueck: { id: string; oldValues: Partial<Bike> }[] = Array.isArray(data?.zuruecksetzen) ? data.zuruecksetzen : [];
+      const entfernen: string[] = Array.isArray(data?.entfernen) ? data.entfernen : [];
+      const patch = new Map(zurueck.map(z => [z.id, z.oldValues]));
+      setBikes(prev => [
+        ...wieder,
+        ...prev
+          .filter(b => !entfernen.includes(b.id) && !wieder.some(w => w.id === b.id))
+          .map(b => (patch.has(b.id) ? { ...b, ...patch.get(b.id)! } : b)),
+      ]);
+      if (auth.currentUser) {
+        wieder.forEach(b => setDoc(doc(db, 'bikes', b.id), { ...b, userId: auth.currentUser!.uid })
+          .catch(e => handleFirestoreError(e, OperationType.CREATE, 'bikes')));
+        zurueck.forEach(z => updateDoc(doc(db, 'bikes', z.id), { ...z.oldValues, lastModified: Date.now() })
+          .catch(e => handleFirestoreError(e, OperationType.UPDATE, 'bikes')));
+        entfernen.forEach(id => deleteDoc(doc(db, 'bikes', id))
+          .catch(e => handleFirestoreError(e, OperationType.DELETE, 'bikes')));
+      }
+      if (activeWorkshopBikeId && entfernen.includes(activeWorkshopBikeId)) setActiveWorkshopBikeId(null);
     } else if (type === 'update' && data?.konvolutId) {
       // Konvolut-Aenderung: die alte Info auf alle Mitglieder zuruecksetzen.
       const alt: KonvolutInfo | undefined = data.oldValues?.konvolut;
@@ -1715,6 +1789,7 @@ function App() {
               deleteBike={deleteBike}
               deleteKonvolut={deleteKonvolut}
               updateKonvolut={updateKonvolut}
+              updateKonvolutGruppe={updateKonvolutGruppe}
               addInventoryItem={addInventoryItem}
               deleteInventoryItem={deleteInventoryItem}
               deleteGroupOrder={deleteGroupOrder}

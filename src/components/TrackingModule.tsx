@@ -17,15 +17,15 @@ import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { formatCurrency, formatTime } from '../lib/utils';
-import { TrendingUp, Clock, Wallet, Plus, Search, Filter, ArrowUpDown, ArrowUp, ArrowDown, MoreVertical, Trash2, Edit2, Star, ChevronDown, ChevronUp, X, Check, FileCheck, Eye, EyeOff, Play, Pause, RotateCcw, Megaphone, Monitor, FileText, Wrench, Droplet, Tag, PiggyBank, CalendarClock, Repeat, MapPin, Boxes, ChevronRight, StickyNote } from 'lucide-react';
+import { TrendingUp, Clock, Wallet, Plus, Search, Filter, ArrowUpDown, ArrowUp, ArrowDown, MoreVertical, Trash2, Edit2, Star, ChevronDown, ChevronUp, X, Check, FileCheck, Eye, EyeOff, Play, Pause, RotateCcw, Megaphone, Monitor, FileText, Wrench, Droplet, Tag, PiggyBank, CalendarClock, Repeat, MapPin, Boxes, ChevronRight, StickyNote, Pencil } from 'lucide-react';
 import { ReceiptUploader } from './ReceiptUploader';
 import { BikeDetailsFields } from './BikeDetailsFields';
 import { GroupOrderModal } from './GroupOrderModal';
 import { GroupOrderDraftItem, buildDraftItems } from '../lib/groupOrders';
 import { KonvolutModal } from './KonvolutModal';
 import {
-  KonvolutDraft, KonvolutGruppe, KonvolutZeile, buildKonvolutBikes, konvolutSumme,
-  konvolutZeilen, standardKonvolutName,
+  KonvolutDraft, KonvolutEditDraft, KonvolutGruppe, KonvolutZeile, buildKonvolutBikes,
+  konvolutAnzeige, konvolutSumme, konvolutZeilen, standardKonvolutName,
 } from '../lib/konvolut';
 import { emptyBikeDetails, openKaufvertragPrint } from '../lib/kaufvertrag';
 import {
@@ -108,6 +108,8 @@ interface TrackingModuleProps {
   deleteKonvolut?: (konvolutId: string) => void;
   /** Schreibt geänderte Konvolut-Daten auf alle Mitglieder der Gruppe. */
   updateKonvolut?: (konvolutId: string, patch: Partial<KonvolutInfo>) => void;
+  /** Bearbeitet ein Konvolut als Ganzes. Gibt Fehler zurück → Dialog bleibt offen. */
+  updateKonvolutGruppe?: (konvolutId: string, entwurf: KonvolutEditDraft) => string[] | void;
   addInventoryItem?: (item: Partial<InventoryItem>, module?: 'tracking' | 'workshop') => void;
   deleteInventoryItem: (id: string) => void;
   deleteGroupOrder?: (id: string) => void;
@@ -133,6 +135,7 @@ export function TrackingModule({
   deleteBike,
   deleteKonvolut,
   updateKonvolut,
+  updateKonvolutGruppe,
   addInventoryItem,
   deleteInventoryItem,
   deleteGroupOrder,
@@ -199,6 +202,9 @@ export function TrackingModule({
   const [openKonvolutMenu, setOpenKonvolutMenu] = useState<string | null>(null);
   // Notiz-Dialog zum gesamten Ankauf (nicht zu einem einzelnen Rad).
   const [notizKonvolut, setNotizKonvolut] = useState<KonvolutInfo | null>(null);
+  // Konvolut im Bearbeiten-Dialog. Nur die ID merken, die Gruppe wird unten stets
+  // frisch aus rawBikes abgeleitet.
+  const [editKonvolutId, setEditKonvolutId] = useState<string | null>(null);
   const [notizText, setNotizText] = useState('');
   const istKonvolutOffen = (id: string) => konvolutOffen[id] ?? (tableViewMode === 'expanded');
   const toggleKonvolut = (id: string) =>
@@ -1669,10 +1675,41 @@ export function TrackingModule({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filteredBikes, konvolutOffen, tableViewMode]);
 
+  // Gruppe für den Bearbeiten-Dialog IMMER aus rawBikes, nie aus filteredBikes: ein
+  // aktiver Filter blendet sonst Mitglieder aus, und die würden beim Speichern als
+  // gelöscht interpretiert – das wäre datenzerstörend.
+  const editKonvolutGruppe: KonvolutGruppe | null = React.useMemo(() => {
+    if (!editKonvolutId) return null;
+    const m = rawBikes.filter(b => b.konvolut?.id === editKonvolutId);
+    return m.length ? { info: m[0].konvolut!, bikes: m } : null;
+  }, [rawBikes, editKonvolutId]);
+
+  // Hängt nachträglich hinzugefügte Räder an den Lead, der schon ein Mitglied der
+  // Gruppe führt. Query nur nach userId, Rest im JS – zusammengesetzte Indizes sind
+  // in diesem Projekt nicht deploybar.
+  const haengeAnGruppenLead = async (mitgliedIds: string[], neueIds: string[]) => {
+    const uid = auth.currentUser?.uid;
+    if (!uid) return;
+    const snap = await getDocs(query(collection(db, 'flyerHouses'), where('userId', '==', uid)));
+    const lead = snap.docs
+      .map(d => d.data())
+      .filter(isLeadDoc)
+      .map(deserializeLead)
+      .find(l => (l.bikeIds || []).some(id => mitgliedIds.includes(id)));
+    if (!lead) return;
+    await updateDoc(doc(db, 'flyerHouses', lead.id), { bikeIds: arrayUnion(...neueIds) });
+    addLog(`${neueIds.length === 1 ? 'Neues Rad' : `${neueIds.length} neue Räder`} mit Lead "${lead.name || lead.address}" verknüpft.`, 'tracking');
+  };
+
   // Kopfzeile eines Konvoluts: dieselben Spalten wie eine Radzeile, nur summiert.
   const renderKonvolutRow = (gruppe: KonvolutGruppe) => {
     const { info, bikes: mitglieder } = gruppe;
     const summe = konvolutSumme(mitglieder);
+    const anzeige = konvolutAnzeige(info, summe);
+    const abweichung = anzeige.preisWeichtAb || anzeige.zeitWeichtAb;
+    const anzeigeTitel = `Zuletzt erfasst: ${formatCurrency(info.totalPrice)} / ${info.pickupMinutes || 0} min`
+      + ` · Aktuell auf ${summe.anzahl} ${summe.anzahl === 1 ? 'Rad' : 'Räder'} verteilt: `
+      + `${formatCurrency(anzeige.preis)} / ${anzeige.abholMinuten} min`;
     const offen = istKonvolutOffen(info.id);
     const quelle = mitglieder.every(b => b.acquisitionSource === mitglieder[0].acquisitionSource)
       ? mitglieder[0].acquisitionSource
@@ -1705,6 +1742,18 @@ export function TrackingModule({
                       <p className="px-3 py-1.5 text-[10px] uppercase font-bold text-slate-500 tracking-wider">
                         {info.name}
                       </p>
+                      {updateKonvolutGruppe && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setEditKonvolutId(info.id);
+                            setOpenKonvolutMenu(null);
+                          }}
+                          className="w-full text-left px-4 py-2 text-sm text-slate-300 hover:bg-slate-700 hover:text-white flex items-center"
+                        >
+                          <Pencil className="w-3 h-3 mr-2" /> Konvolut bearbeiten
+                        </button>
+                      )}
                       {updateKonvolut && (
                         <button
                           onClick={(e) => {
@@ -1760,8 +1809,13 @@ export function TrackingModule({
                     <StickyNote className="w-3 h-3 inline-block text-amber-400 mr-1 -mt-0.5" />
                   </span>
                 )}
-                {formatCurrency(info.totalPrice)} Konvolutpreis
-                {info.pickupMinutes > 0 && ` · ${info.pickupMinutes} min Abholung anteilig verbucht`}
+                {/* Aus den Rädern abgeleitet, die es wirklich noch gibt – sonst behauptet die
+                    Zeile nach dem Löschen eines Mitglieds weiter den alten Gesamtpreis. */}
+                <span title={anzeigeTitel}>
+                  {formatCurrency(anzeige.preis)} Konvolutpreis
+                  {anzeige.abholMinuten > 0 && ` · ${anzeige.abholMinuten} min Abholung verbucht`}
+                  {abweichung && <span className="text-amber-500/80"> *</span>}
+                </span>
               </span>
             </div>
           </div>
@@ -3112,6 +3166,29 @@ export function TrackingModule({
             </div>
           </div>
         </div>
+      )}
+
+      {/* Konvolut nachträglich korrigieren – Preis, Abholdauer, Räderliste */}
+      {editKonvolutGruppe && updateKonvolutGruppe && (
+        <KonvolutModal
+          gruppe={editKonvolutGruppe}
+          onSaveEdit={(entwurf) => {
+            const ergebnis = updateKonvolutGruppe(editKonvolutGruppe.info.id, entwurf);
+            if (Array.isArray(ergebnis) && ergebnis.length > 0) return ergebnis;
+            // Neue Räder an den Lead der Gruppe hängen. Die IDs stehen schon im
+            // Entwurf – der Plan benutzt genau diese, siehe KonvolutEditZeile.neuId.
+            const neueIds = entwurf.zeilen
+              .filter(z => !z.bikeId && z.neuId && z.name.trim())
+              .map(z => z.neuId!);
+            if (neueIds.length > 0) {
+              haengeAnGruppenLead(editKonvolutGruppe.bikes.map(b => b.id), neueIds).catch(e => {
+                console.error(e);
+                addLog(`Neue Räder von "${editKonvolutGruppe.info.name}" konnten nicht mit dem Lead verknüpft werden.`, 'tracking');
+              });
+            }
+          }}
+          onClose={() => setEditKonvolutId(null)}
+        />
       )}
 
       {/* Notiz zum gesamten Konvolut – landet auch im KI-Report */}

@@ -13,8 +13,9 @@
 // - Ausgabe wird ohne Pretty-Print geschrieben (token-effizient).
 
 import type { Bike, InventoryItem, GroupOrder, ServiceRequest, DailyTodo, Log } from '../types';
+import { abholSekunden } from './konvolut';
 
-export const AI_REPORT_VERSION = '1.3';
+export const AI_REPORT_VERSION = '1.4';
 
 export interface AiReportInput {
   bikes: Bike[];
@@ -110,6 +111,7 @@ export function buildAiReport(input: AiReportInput) {
         name: info.name,
         price: round2(info.totalPrice),
         pickupMin: info.pickupMinutes,
+        pickupS: mitglieder.reduce((s, b) => s + abholSekunden(b, id), 0),
         n0: info.bikeCount,
         n: mitglieder.length,
         sold,
@@ -149,12 +151,14 @@ export function buildAiReport(input: AiReportInput) {
       },
       inv: { iq: 'initialQuantity', q: 'currentQuantity', c: 'pricePerUnit', oId: 'Group order id' },
       kv: {
-        _: 'Konvolut-Ankauf: mehrere Raeder zu EINEM Gesamtpreis und EINER Abholfahrt. Preis und Abholzeit sind beim Anlegen gleichmaessig auf die Raeder verteilt, stecken also bereits in deren bp/tz. Nicht doppelt zaehlen.',
+        _: 'Konvolut-Ankauf: mehrere Raeder zu EINEM Gesamtpreis und EINER Abholfahrt. Preis und Abholzeit sind gleichmaessig auf die Raeder verteilt, stecken also bereits in deren bp/tz. Nicht doppelt zaehlen. Das Konvolut ist nachtraeglich bearbeitbar (Preis, Abholdauer, Raederliste); eine Bearbeitung verteilt Preis und Abholzeit NEU - auch auf bereits verkaufte Raeder. Aeltere Reports desselben Konvoluts koennen deshalb andere bp/tz-Werte zeigen, das ist kein Datenfehler.',
         id: 'Konvolut-ID, referenziert von bikes[].kv',
         name: 'Anzeigename, z.B. "Konvolut #1"',
-        price: 'Gesamtpreis des Konvoluts (= Summe bp der Mitglieder)',
-        pickupMin: 'Abholdauer des gesamten Ankaufs in Minuten (anteilig als workLog je Rad gebucht, steckt in tz)',
-        n0: 'Anzahl Raeder beim Anlegen', n: 'Anzahl heute noch vorhandener Mitglieder (kleiner als n0 = eins wurde geloescht)',
+        price: 'Gesamtpreis, zuletzt beim Anlegen oder im Bearbeiten-Dialog erfasst. Weicht von bp ab, wenn danach ein einzelnes Rad geloescht oder dessen bp direkt geaendert wurde - dann gilt bp als tatsaechlich im Konvolut steckender Einkauf.',
+        pickupMin: 'Erfasste Abholdauer des gesamten Ankaufs in Minuten (anteilig als workLog je Rad gebucht, steckt in tz). Was davon HEUTE noch gebucht ist, steht in pickupS.',
+        pickupS: 'Tatsaechlich noch gebuchte Abholzeit in Sekunden (Summe der Abhol-workLogs aller Mitglieder). Kleiner als pickupMin*60 = ein Abhol-Eintrag wurde in der Werkstatt von Hand gekuerzt/geloescht oder ein Rad geloescht.',
+        n0: 'Anzahl Raeder, auf die Preis und Abholzeit zuletzt verteilt wurden (beim Anlegen oder beim letzten Bearbeiten)',
+        n: 'Anzahl heute vorhandener Mitglieder. Kleiner als n0 = ein Rad wurde ausserhalb des Konvolut-Dialogs geloescht, die Verteilung wurde dann NICHT neu gerechnet.',
         sold: 'davon verkauft',
         bp: 'Summe Einkauf', mat: 'Summe Materialausgaben', sp: 'Summe realisierter Verkaufserloese', tz: 'Summe timeSpentSeconds',
         prof: 'Kassenlage des Ankaufs = sp - bp - mat. Bewusst mit dem KOMPLETTEN Einkauf, auch wenn noch nicht alles verkauft ist (60 EUR gezahlt, 30 EUR zurueck => -30).',

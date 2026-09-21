@@ -98,7 +98,7 @@ export interface KonvolutInfo {
   name: string;            // z.B. "Konvolut #1"
   totalPrice: number;      // Gesamtpreis des Konvoluts (alle Räder zusammen)
   pickupMinutes: number;   // Abholdauer des gesamten Konvoluts in Minuten
-  bikeCount: number;       // Anzahl Räder beim Anlegen – Basis der Aufteilung
+  bikeCount: number;       // Anzahl Räder, auf die Preis und Abholzeit zuletzt verteilt wurden (Anlegen oder letzte Bearbeitung)
   /**
    * Freitext zum gesamten Ankauf (Verkäufer, Zustand, Absprachen). Gilt für das
    * Konvolut als Ganzes, nicht für ein einzelnes Rad – dafür gibt es `Bike.notes`.
@@ -243,7 +243,9 @@ export interface Log {
   message: string;
   module: 'tracking' | 'workshop' | 'stopwatch' | 'system';
   revertAction?: {
-    type: 'add' | 'delete' | 'update';
+    // 'konvolut' = komplette Konvolut-Bearbeitung (Preis-/Zeitverteilung, neue und
+    // gelöschte Mitglieder) – nur als Ganzes rücknehmbar, siehe revertLogAction.
+    type: 'add' | 'delete' | 'update' | 'konvolut';
     data: any;
   };
   userId?: string;
