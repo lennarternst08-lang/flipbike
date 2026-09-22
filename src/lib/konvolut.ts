@@ -1,4 +1,4 @@
-import { Bike, KonvolutInfo, WorkLog } from '../types';
+import { AcquisitionSource, Bike, KonvolutInfo, WorkLog } from '../types';
 
 // Konvolut-Ankauf: ein Preis, eine Abholfahrt, mehrere Räder. Damit die Tabelle
 // trotzdem pro Rad rechnen kann (Stundenlohn, Profit, Standzeit), wird beides
@@ -19,7 +19,9 @@ export interface KonvolutDraft {
   totalPrice: number;
   pickupMinutes: number;
   bikes: KonvolutDraftBike[];
-  acquisitionSource?: 'flyer' | 'kleinanzeigen';
+  acquisitionSource?: AcquisitionSource;
+  /** Freitext bei 'andere', z.B. "Flohmarkt". */
+  acquisitionNote?: string;
 }
 
 /**
@@ -120,7 +122,7 @@ export function buildKonvolutBikes(draft: KonvolutDraft, konvolutId: string): Pa
         }]
       : [];
 
-    return {
+    const rad: Partial<Bike> = {
       name: entwurf.name.trim(),
       status: 'Zu reparieren' as const,
       purchasePrice: preise[i],
@@ -131,6 +133,10 @@ export function buildKonvolutBikes(draft: KonvolutDraft, konvolutId: string): Pa
       acquisitionSource: draft.acquisitionSource,
       konvolut: info,
     };
+    if (draft.acquisitionSource === 'andere' && draft.acquisitionNote?.trim()) {
+      rad.acquisitionNote = draft.acquisitionNote.trim();
+    }
+    return rad;
   });
 }
 
@@ -407,6 +413,8 @@ export function planKonvolutUpdate(
 
   const ersteQuelle = mitglieder[0].acquisitionSource;
   const quelle = mitglieder.every(b => b.acquisitionSource === ersteQuelle) ? ersteQuelle : undefined;
+  const ersteNotiz = mitglieder[0].acquisitionNote;
+  const quellNotiz = quelle === 'andere' && mitglieder.every(b => b.acquisitionNote === ersteNotiz) ? ersteNotiz : undefined;
 
   const plan: KonvolutUpdatePlan = { ...leer, info, fehler: [], hinweise: [] };
 
@@ -428,6 +436,7 @@ export function planKonvolutUpdate(
         konvolut: info,
       };
       if (quelle) rad.acquisitionSource = quelle;
+      if (quellNotiz) rad.acquisitionNote = quellNotiz;
       plan.neu.push(rad);
       plan.verteilung.push({
         id: z.id, name: z.name, neu: true, verkauft: false, laeuft: false,

@@ -15,7 +15,7 @@
 import type { Bike, InventoryItem, GroupOrder, ServiceRequest, DailyTodo, Log } from '../types';
 import { abholSekunden } from './konvolut';
 
-export const AI_REPORT_VERSION = '1.4';
+export const AI_REPORT_VERSION = '1.5';
 
 export interface AiReportInput {
   bikes: Bike[];
@@ -54,6 +54,18 @@ export function buildAiReport(input: AiReportInput) {
     .filter(item => !item.orderId)
     .reduce((acc, item) => acc + (item.pricePerUnit * (item.initialQuantity || item.quantity)), 0);
   const totalGroupOrderCost = groupOrders.reduce((acc, order) => acc + order.totalPrice, 0);
+
+  // Flyer-Verteilkosten (Druck, Helfer). Die App bucht sie als Infrastruktur des
+  // Verteilmonats und zieht sie vom Gesamtgewinn ab (TrackingModule, flyerCostByMonth).
+  // Bis v1.4 fehlten sie hier komplett: capInf und prof waren um genau diesen Betrag
+  // zu günstig. Gleiche Regel wie in der App: nur Kosten > 0 mit Verteildatum.
+  const flyerCostAreas = flyerAreas.filter((a: any) => (Number(a.costEuro) || 0) > 0 && (a.distributedDate || '').slice(0, 7));
+  const flyerCost = flyerCostAreas.reduce((s: number, a: any) => s + (Number(a.costEuro) || 0), 0);
+  const flyerCostByMonth: Record<string, number> = {};
+  for (const a of flyerCostAreas) {
+    const monat = String(a.distributedDate).slice(0, 7);
+    flyerCostByMonth[monat] = round2((flyerCostByMonth[monat] || 0) + (Number(a.costEuro) || 0));
+  }
   const totalRevenue = soldBikes.reduce((acc, bike) => acc + (bike.sellingPrice || 0), 0);
 
   const profit = bikes.reduce((acc, bike) => {
@@ -61,7 +73,7 @@ export function buildAiReport(input: AiReportInput) {
     let flow = -bike.purchasePrice - expenses;
     if (bike.status === 'Verkauft') flow += (bike.sellingPrice || 0);
     return acc + flow;
-  }, 0) - totalInventoryCost - totalGroupOrderCost;
+  }, 0) - totalInventoryCost - totalGroupOrderCost - flyerCost;
 
   const soldBikesProfit = soldBikes.reduce((acc, bike) => {
     const expenses = (bike.expenses || []).reduce((sum, exp) => sum + exp.amount, 0);
@@ -74,7 +86,8 @@ export function buildAiReport(input: AiReportInput) {
   const totalTimeh = bikes.reduce((acc, bike) => acc + bike.timeSpentSeconds, 0) / 3600;
 
   const tiedCap = activeBikes.reduce((acc, b) => acc + b.purchasePrice + (b.expenses || []).reduce((s, e) => s + e.amount, 0), 0);
-  const infCap = infraBikes.reduce((acc, b) => acc + b.purchasePrice + (b.expenses || []).reduce((s, e) => s + e.amount, 0), 0);
+  const infBikesCap = infraBikes.reduce((acc, b) => acc + b.purchasePrice + (b.expenses || []).reduce((s, e) => s + e.amount, 0), 0);
+  const infCap = infBikesCap + flyerCost;
 
   const lagerwert = inventoryItems.reduce((acc, item) => acc + (item.quantity * item.pricePerUnit), 0);
   const standzeitBikes = bikes.filter(b => b.listedAt && b.soldAt);
@@ -144,7 +157,8 @@ export function buildAiReport(input: AiReportInput) {
         tz: 'timeSpentSeconds',
         wl: 'workLogs (einzelne Arbeitszeiten): dt=timestamp, s=durationSeconds, n=note (frei beschriftbare Notiz zur Zeit)',
         rcv: 'receivedAt (Eingang)', lst: 'listedAt (inseriert am)', sld: 'soldAt (verkauft am)',
-        acq: 'acquisitionSource: flyer=Flyer-Akquise, kleinanzeigen=Kleinanzeigen, null=unbekannt',
+        acq: 'acquisitionSource: flyer=Flyer-Akquise, kleinanzeigen=Kleinanzeigen, andere=sonstige Quelle (was genau steht in acqN), null=unbekannt',
+        acqN: 'Freitext zur Quelle, nur bei acq=andere, z.B. "Flohmarkt"',
         kv: 'Konvolut-ID (siehe kv[]), null = einzeln angekauft',
         notes: 'Freitext zu DIESEM Rad (Konvolut-Notizen stehen getrennt in kv[].notes)',
         todos: 'offene Checklistenpunkte des Rades (erledigte sind nicht enthalten)',
@@ -171,6 +185,19 @@ export function buildAiReport(input: AiReportInput) {
       svcReq: { iss: 'issue', drop: 'dropoff', st: 'status' },
       logs: "Aktivitäts-/Zeitprotokoll (ts=timestamp ms, m=message inkl. 'Flyer verteilen'-Einträgen & Notizen, mod=module)",
       flyerHistory: { ts: 'log timestamp ISO', act: 'add|edit|delete', fc: 'flyerCount', dt: 'distributedDate', st: 'status (geplant/erledigt)' },
+      stats: {
+        prof: 'Gesamtgewinn als Cashflow: alle Verkaeufe minus alle Einkaeufe, Materialausgaben, Lagerkaeufe ohne Bestellung, Gruppenbestellungen UND Flyer-Verteilkosten (seit v1.5; vorher fehlten die Flyer-Kosten)',
+        capInf: 'Infrastruktur-Summe = Infrastruktur-Raeder (EK + Ausgaben) + Flyer-Verteilkosten; Aufteilung in infDetail',
+        infDetail: 'bikes = Infrastruktur-Raeder (EK + Ausgaben), flyer = Flyer-Verteilkosten (Druck, Helfer)',
+        flyerCost: 'Summe aller Flyer-Verteilkosten (Gebiete mit Kosten > 0 und Verteildatum)',
+        flyerCostByMonth: 'Flyer-Verteilkosten je Verteilmonat (yyyy-MM) - so bucht die App sie in die Infrastruktur des Monats',
+        geschHw: 'Geschaefts-Stundenlohn = prof / (gesamte Radzeit + Flyer-Verteilzeit)',
+      },
+      flyer: {
+        'areaDetails[].costEuro': 'Verteilkosten dieses Gebiets (Druck, Helfer) - fliesst in stats.capInf und stats.prof',
+        bikesFromAndere: 'Raeder mit acq=andere',
+        andereQuellen: 'Raeder mit acq=andere nach Freitext gezaehlt, z.B. {Flohmarkt: 2}',
+      },
     },
     stats: {
       rev: round2(totalRevenue),
@@ -180,6 +207,9 @@ export function buildAiReport(input: AiReportInput) {
       tt: round2(totalTimeh),
       capActiv: round2(tiedCap),
       capInf: round2(infCap),
+      infDetail: { bikes: round2(infBikesCap), flyer: round2(flyerCost) },
+      flyerCost: round2(flyerCost),
+      flyerCostByMonth,
       lagerwert: round2(lagerwert),
       avgStandzeit: avgStandzeit !== null ? Math.round(avgStandzeit * 10) / 10 : null,
       counts: { sold: soldBikes.length, active: activeBikes.length, all: bikes.length, konvolute: konvolute.length },
@@ -199,6 +229,7 @@ export function buildAiReport(input: AiReportInput) {
       lst: b.listedAt || null,
       sld: b.soldAt || null,
       acq: b.acquisitionSource || null,
+      acqN: b.acquisitionSource === 'andere' && b.acquisitionNote ? b.acquisitionNote : undefined,
       kv: b.konvolut?.id || null,
       notes: b.notes,
       todos: (b.checklist || []).filter(c => !c.completed).map(c => c.text),
@@ -230,12 +261,22 @@ export function buildAiReport(input: AiReportInput) {
       },
       bikesFromFlyer: bikes.filter(b => b.acquisitionSource === 'flyer').length,
       bikesFromKleinanzeigen: bikes.filter(b => b.acquisitionSource === 'kleinanzeigen').length,
+      bikesFromAndere: bikes.filter(b => b.acquisitionSource === 'andere').length,
+      // Aufschluesselung der sonstigen Quellen nach Freitext, z.B. { Flohmarkt: 2 }
+      andereQuellen: bikes
+        .filter(b => b.acquisitionSource === 'andere')
+        .reduce((m: Record<string, number>, b) => {
+          const k = (b.acquisitionNote || '').trim() || 'ohne Angabe';
+          m[k] = (m[k] || 0) + 1;
+          return m;
+        }, {}),
       areaDetails: flyerAreas.map((a: any) => ({
         name: a.name || '',
         flyerCount: a.flyerCount || 0,
         date: a.distributedDate || null,
         status: a.status || 'erledigt',
         durationMin: a.durationMinutes || 0,
+        costEuro: round2(Number(a.costEuro) || 0), // fliesst in stats.capInf / stats.prof
         note: a.note || '',
       })),
       history: flyerHist.map((h: any) => ({

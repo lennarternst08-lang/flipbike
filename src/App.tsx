@@ -1025,8 +1025,14 @@ function App() {
       photos: [],
       details: sanitizeDetails(newBikeData.details), // immer definiert (kein undefined → Firestore-sicher)
       userId: auth.currentUser?.uid,
-      acquisitionSource: newBikeData.acquisitionSource || undefined
     };
+    // Nur setzen, wenn vorhanden: Firestore lehnt undefined-Felder ab, und setDoc
+    // scheiterte bisher lautlos für jedes Rad ohne Quelle (z.B. "Als Projekt
+    // extrahieren") – das Rad existierte dann nur lokal.
+    if (newBikeData.acquisitionSource) newBike.acquisitionSource = newBikeData.acquisitionSource;
+    if (newBikeData.acquisitionSource === 'andere' && newBikeData.acquisitionNote?.trim()) {
+      newBike.acquisitionNote = newBikeData.acquisitionNote.trim();
+    }
     // Nur setzen, wenn es das Rad wirklich betrifft – undefined würde Firestore ablehnen.
     if (newBikeData.konvolut) newBike.konvolut = newBikeData.konvolut;
     

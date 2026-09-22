@@ -19,6 +19,7 @@ import { Input } from './ui/input';
 import { formatCurrency, formatTime } from '../lib/utils';
 import { TrendingUp, Clock, Wallet, Plus, Search, Filter, ArrowUpDown, ArrowUp, ArrowDown, MoreVertical, Trash2, Edit2, Star, ChevronDown, ChevronUp, X, Check, FileCheck, Eye, EyeOff, Play, Pause, RotateCcw, Megaphone, Monitor, FileText, Wrench, Droplet, Tag, PiggyBank, CalendarClock, Repeat, MapPin, Boxes, ChevronRight, StickyNote, Pencil } from 'lucide-react';
 import { ReceiptUploader } from './ReceiptUploader';
+import { AkquiseAuswahl, AkquiseIcon, akquiseLabel } from './AkquiseQuelle';
 import { BikeDetailsFields } from './BikeDetailsFields';
 import { GroupOrderModal } from './GroupOrderModal';
 import { GroupOrderDraftItem, buildDraftItems } from '../lib/groupOrders';
@@ -597,7 +598,7 @@ export function TrackingModule({
 
     // Ein Lead für die gemeinsame Abholadresse. Bewusst nacheinander: das erste Rad
     // legt den Lead an, die folgenden hängen sich per arrayUnion an denselben an.
-    if (adresse.strasse && draft.acquisitionSource !== 'kleinanzeigen' && angelegt.length > 0) {
+    if (adresse.strasse && (draft.acquisitionSource ?? 'flyer') === 'flyer' && angelegt.length > 0) {
       (async () => {
         for (const bike of angelegt) {
           await linkBikeToAddress(bike, adresse.strasse, adresse.plz);
@@ -1788,6 +1789,9 @@ export function TrackingModule({
     const quelle = mitglieder.every(b => b.acquisitionSource === mitglieder[0].acquisitionSource)
       ? mitglieder[0].acquisitionSource
       : undefined;
+    const quellNotiz = quelle === 'andere' && mitglieder.every(b => b.acquisitionNote === mitglieder[0].acquisitionNote)
+      ? mitglieder[0].acquisitionNote
+      : undefined;
 
     return (
       <tr
@@ -1895,12 +1899,7 @@ export function TrackingModule({
           </div>
         </td>
         <td className="px-1 py-2 text-center w-8">
-          {quelle === 'flyer' && (
-            <span title="Flyer-Akquise"><Megaphone className="w-3.5 h-3.5 text-emerald-400 inline-block" /></span>
-          )}
-          {quelle === 'kleinanzeigen' && (
-            <span title="Kleinanzeigen"><Monitor className="w-3.5 h-3.5 text-blue-400 inline-block" /></span>
-          )}
+          <AkquiseIcon source={quelle} note={quellNotiz} />
         </td>
         <td className="px-1 py-2 w-8"></td>
         <td className="px-1 py-2 w-8"></td>
@@ -2216,28 +2215,17 @@ export function TrackingModule({
                                     {/* Akquise-Quelle */}
                                     <div className="px-3 py-2">
                                       <p className="text-[10px] uppercase font-bold text-slate-500 tracking-wider mb-1.5">Akquise-Quelle</p>
-                                      <div className="flex gap-1">
-                                        <button
-                                          onClick={(e) => { e.stopPropagation(); updateBike(bike.id, { acquisitionSource: 'flyer' }); setOpenMenuId(null); }}
-                                          className={`flex-1 flex items-center justify-center gap-1 px-2 py-1.5 text-xs font-medium rounded transition-colors ${
-                                            (bike.acquisitionSource === 'flyer' || !bike.acquisitionSource)
-                                              ? 'bg-emerald-600 text-white'
-                                              : 'bg-slate-700 text-slate-400 hover:text-white hover:bg-slate-600'
-                                          }`}
-                                        >
-                                          <Megaphone className="w-3 h-3" /> Flyer
-                                        </button>
-                                        <button
-                                          onClick={(e) => { e.stopPropagation(); updateBike(bike.id, { acquisitionSource: 'kleinanzeigen' }); setOpenMenuId(null); }}
-                                          className={`flex-1 flex items-center justify-center gap-1 px-2 py-1.5 text-xs font-medium rounded transition-colors ${
-                                            bike.acquisitionSource === 'kleinanzeigen'
-                                              ? 'bg-blue-600 text-white'
-                                              : 'bg-slate-700 text-slate-400 hover:text-white hover:bg-slate-600'
-                                          }`}
-                                        >
-                                          <Monitor className="w-3 h-3" /> KA
-                                        </button>
-                                      </div>
+                                      {/* Das Menü bleibt beim Umschalten offen, sonst ließe sich
+                                          "Andere" nicht mehr mit einem Freitext ergänzen. Leerer
+                                          String statt undefined: Firestore lehnt undefined ab. */}
+                                      <AkquiseAuswahl
+                                        kompakt
+                                        value={{ source: bike.acquisitionSource ?? 'flyer', note: bike.acquisitionNote ?? '' }}
+                                        onChange={(q) => updateBike(bike.id, {
+                                          acquisitionSource: q.source,
+                                          acquisitionNote: q.source === 'andere' ? q.note : '',
+                                        })}
+                                      />
                                     </div>
                                     {/* Kleinanzeigen-Inserate (Gebühr pro Inserat) */}
                                     {(() => {
@@ -2347,16 +2335,7 @@ export function TrackingModule({
                         </div>
                       </td>
                       <td className="px-1 py-2 text-center w-8">
-                        {bike.acquisitionSource === 'flyer' && (
-                          <span title="Flyer-Akquise">
-                            <Megaphone className="w-3.5 h-3.5 text-emerald-400 inline-block" />
-                          </span>
-                        )}
-                        {bike.acquisitionSource === 'kleinanzeigen' && (
-                          <span title="Kleinanzeigen">
-                            <Monitor className="w-3.5 h-3.5 text-blue-400 inline-block" />
-                          </span>
-                        )}
+                        <AkquiseIcon source={bike.acquisitionSource} note={bike.acquisitionNote} />
                       </td>
                       <td className="px-1 py-2 text-center w-8">
                         {/* Putzen (Nikita) als Materialausgabe an-/abwählen */}
@@ -3618,30 +3597,10 @@ export function TrackingModule({
               {newBikeData.status !== 'Material' && newBikeData.status !== 'Infrastruktur' && (
                 <div className="space-y-2">
                   <label className="text-sm font-medium text-slate-400">Akquise-Quelle</label>
-                  <div className="flex bg-slate-800 p-1 rounded-lg border border-slate-700">
-                    <button
-                      type="button"
-                      onClick={() => setNewBikeData({...newBikeData, acquisitionSource: 'flyer'})}
-                      className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
-                        (newBikeData.acquisitionSource ?? 'flyer') === 'flyer'
-                          ? 'bg-emerald-600 text-white shadow'
-                          : 'text-slate-400 hover:text-slate-300'
-                      }`}
-                    >
-                      <Megaphone className="w-3.5 h-3.5" /> Flyer-Akquise
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setNewBikeData({...newBikeData, acquisitionSource: 'kleinanzeigen'})}
-                      className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
-                        newBikeData.acquisitionSource === 'kleinanzeigen'
-                          ? 'bg-blue-600 text-white shadow'
-                          : 'text-slate-400 hover:text-slate-300'
-                      }`}
-                    >
-                      <Monitor className="w-3.5 h-3.5" /> Kleinanzeigen
-                    </button>
-                  </div>
+                  <AkquiseAuswahl
+                    value={{ source: newBikeData.acquisitionSource ?? 'flyer', note: newBikeData.acquisitionNote ?? '' }}
+                    onChange={(q) => setNewBikeData({ ...newBikeData, acquisitionSource: q.source, acquisitionNote: q.note })}
+                  />
 
                   {/* Herkunftsadresse → Lead auf der Flyerkarte */}
                   {(newBikeData.acquisitionSource ?? 'flyer') === 'flyer' && (

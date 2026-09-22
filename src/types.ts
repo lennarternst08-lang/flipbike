@@ -2,6 +2,10 @@ import type { ShowroomListing } from '../showroom/types';
 
 export type BikeStatus = 'Zu reparieren' | 'Inseriert' | 'Verkauft' | 'Infrastruktur' | 'Material';
 
+// Woher ein Rad kam. 'andere' = weder Flyer noch Kleinanzeigen (Flohmarkt,
+// Bekannte, Sperrmüll …); was genau, steht dann frei in Bike.acquisitionNote.
+export type AcquisitionSource = 'flyer' | 'kleinanzeigen' | 'andere';
+
 export interface Expense {
   id: string;
   description: string;
@@ -162,7 +166,9 @@ export interface Bike {
   userId?: string;
   isStandalone?: boolean;
   linkedFromId?: string;
-  acquisitionSource?: 'flyer' | 'kleinanzeigen';
+  acquisitionSource?: AcquisitionSource;
+  /** Nur bei acquisitionSource 'andere': kurzer Freitext, z.B. "Flohmarkt". */
+  acquisitionNote?: string;
 }
 
 export type FlyerAreaStatus = 'geplant' | 'erledigt';

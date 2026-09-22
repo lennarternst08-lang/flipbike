@@ -8,6 +8,7 @@ import {
   abholSekunden, konvolutVorschau, planKonvolutUpdate, splitPreis, splitSekunden,
 } from '../lib/konvolut';
 import { DEFAULT_PLZ } from '../lib/flyerLeads';
+import { Akquise, AkquiseAuswahl } from './AkquiseQuelle';
 
 interface KonvolutModalProps {
   /** Vorgeschlagener Name, z.B. "Konvolut #3" – nur beim Anlegen. */
@@ -52,7 +53,7 @@ export function KonvolutModal({ defaultName = '', gruppe, onSave, onSaveEdit, on
   const [purchaseDate, setPurchaseDate] = useState(new Date().toISOString().split('T')[0]);
   const [totalPrice, setTotalPrice] = useState(gruppe ? vorhandenerPreis : 0);
   const [pickupMinutes, setPickupMinutes] = useState(gruppe?.info.pickupMinutes ?? 0);
-  const [acquisitionSource, setAcquisitionSource] = useState<'flyer' | 'kleinanzeigen'>('flyer');
+  const [quelle, setQuelle] = useState<Akquise>({ source: 'flyer', note: '' });
   const [strasse, setStrasse] = useState('');
   const [plz, setPlz] = useState(DEFAULT_PLZ);
   const [fehler, setFehler] = useState<string[]>([]);
@@ -151,7 +152,8 @@ export function KonvolutModal({ defaultName = '', gruppe, onSave, onSaveEdit, on
         totalPrice,
         pickupMinutes,
         bikes: gueltige,
-        acquisitionSource,
+        acquisitionSource: quelle.source,
+        acquisitionNote: quelle.source === 'andere' ? quelle.note : undefined,
       },
       { strasse: strasse.trim(), plz }
     );
@@ -267,28 +269,9 @@ export function KonvolutModal({ defaultName = '', gruppe, onSave, onSaveEdit, on
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-slate-400 mb-1">Akquise-Quelle</label>
-                  <div className="flex bg-slate-800 p-1 rounded-lg border border-slate-700">
-                    <button
-                      type="button"
-                      onClick={() => setAcquisitionSource('flyer')}
-                      className={`flex-1 flex items-center justify-center gap-1.5 px-2 py-1 text-xs font-medium rounded-md transition-colors ${
-                        acquisitionSource === 'flyer' ? 'bg-emerald-600 text-white shadow' : 'text-slate-400 hover:text-slate-300'
-                      }`}
-                    >
-                      <Megaphone className="w-3.5 h-3.5" /> Flyer
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setAcquisitionSource('kleinanzeigen')}
-                      className={`flex-1 flex items-center justify-center gap-1.5 px-2 py-1 text-xs font-medium rounded-md transition-colors ${
-                        acquisitionSource === 'kleinanzeigen' ? 'bg-blue-600 text-white shadow' : 'text-slate-400 hover:text-slate-300'
-                      }`}
-                    >
-                      <Monitor className="w-3.5 h-3.5" /> Kleinanzeigen
-                    </button>
-                  </div>
+                  <AkquiseAuswahl kompakt value={quelle} onChange={setQuelle} />
                 </div>
-                {acquisitionSource === 'flyer' && (
+                {quelle.source === 'flyer' && (
                   <div className="md:col-span-2 grid grid-cols-3 gap-2">
                     <label className="col-span-2 text-xs text-slate-400 flex flex-col gap-1">
                       Abholadresse (optional)
