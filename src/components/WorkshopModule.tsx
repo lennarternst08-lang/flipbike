@@ -15,6 +15,7 @@ import { WageScenarios } from './WageScenarios';
 import { sanitizeDetails, openKaufvertragPrint, detailsCompleteness } from '../lib/kaufvertrag';
 import { PUTZEN_COST, PUTZEN_LABEL, hasPutzen, togglePutzen } from '../lib/expenses';
 import { WorkshopStopwatchMode } from './WorkshopStopwatchMode';
+import { KleinanzeigeGenerator } from './KleinanzeigeGenerator';
 import { lagerTeile, neueAusgabe } from '../lib/werkstatt';
 import { clearActiveTimer, readActiveTimer, sitzungSekunden } from '../lib/stopwatch';
 
@@ -1223,6 +1224,17 @@ export function WorkshopModule({ bikes, inventoryItems, groupOrders = [], receip
               />
             </CardContent>
           </Card>
+
+          {/* Kleinanzeigen-Inserat (nur für echte Fahrräder) */}
+          {activeBike.status !== 'Material' && activeBike.status !== 'Infrastruktur' && (
+            <KleinanzeigeGenerator
+              key={activeBike.id}
+              bike={activeBike}
+              details={details}
+              onDetailsChange={persistDetails}
+              updateBike={updateBike}
+            />
+          )}
         </div>
 
         {/* Sidebar Column */}

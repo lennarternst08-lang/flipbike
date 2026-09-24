@@ -112,6 +112,35 @@ export interface KonvolutInfo {
   notes?: string;
 }
 
+export type KleinanzeigeZustand = 'neuwertig' | 'sehr_gut' | 'gut' | 'gebraucht';
+
+/**
+ * Eingaben für den Kleinanzeigen-Generator in der Werkstatt. Nur was es nicht
+ * schon in `BikeDetails` gibt – Marke, Modell, Größen, Farbe, Schaltung und
+ * Mängel kommen von dort, damit Inserat und Kaufvertrag dasselbe sagen. Liegt
+ * wie `showroom`/`konvolut` am Fahrrad-Dokument (`isValidBike` erlaubt
+ * Zusatzfelder); in `details` ginge es nicht, `sanitizeDetails` wirft
+ * unbekannte Felder weg.
+ */
+export interface KleinanzeigeInfo {
+  einleitung: string;      // leer = automatischer Vorschlag
+  adjektiv: string;        // z.B. "Klassisches"
+  radtyp: string;          // z.B. "Damenrad"
+  stil: string;            // z.B. "Hollandstil"
+  highlights: string;      // kommagetrennt, z.B. "Weidenkorb, wartungsarmer Technik"
+  schaltungsart: string;   // z.B. "Nabenschaltung"
+  schaltBedienung: string; // z.B. "Drehgriff"
+  bremseVorne: string;     // z.B. "V-Bremse"
+  bremseHinten: string;    // leer = wie vorne
+  lichtHersteller: string; // z.B. "Shimano"
+  lichtquelle: string;     // z.B. "Nabendynamo"
+  scheinwerfer: string;    // z.B. "LED"
+  koerperVon: string;      // leer = Vorschlag aus der Rahmenhöhe
+  koerperBis: string;
+  ausstattung: string[];   // Reihenfolge = Reihenfolge im Inserat
+  zustand: KleinanzeigeZustand;
+}
+
 export interface WorkLog {
   id: string;
   timestamp: string;
@@ -160,6 +189,8 @@ export interface Bike {
    * `photos` – im Anzeigen-Objekt ist `photos` deshalb immer leer.
    */
   showroom?: ShowroomListing;
+  /** Eingaben für den Kleinanzeigen-Generator (Werkstatt, unter Notizen). */
+  kleinanzeige?: KleinanzeigeInfo;
   /** Gesetzt, wenn das Rad aus einem Konvolut-Ankauf stammt. */
   konvolut?: KonvolutInfo;
   hiddenInWorkshop?: boolean;
