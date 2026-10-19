@@ -93,7 +93,7 @@ export function sanitizeDetails(d?: Partial<BikeDetails> | null): BikeDetails {
 // Zählt, wie viele der vertragsrelevanten Fahrrad-Felder ausgefüllt sind (für die Übersicht).
 export const CONTRACT_BIKE_FIELDS: (keyof BikeDetails)[] = [
   'marke', 'modell', 'rahmennummer', 'laufradgroesse', 'rahmenhoehe',
-  'farbe', 'gangschaltung', 'anzahlGaenge', 'baujahr', 'zubehoer',
+  'farbe', 'gangschaltung', 'anzahlGaenge', 'zubehoer',
 ];
 
 export function detailsCompleteness(d?: BikeDetails | null): { filled: number; total: number } {
@@ -291,11 +291,14 @@ export function buildKaufvertragHtml(bike: Bike, detailsInput?: BikeDetails): st
   }
   h1 { font-size: 15pt; margin: 0; text-align: center; letter-spacing: .2px; }
   .subtitle { text-align: center; font-size: 8.5pt; color: #475569; margin: 2px 0 10px; text-transform: uppercase; letter-spacing: 1px; }
-  .seller { border: 1px solid #cbd5e1; border-radius: 6px; padding: 7px 11px; margin-bottom: 10px; background: #f8fafc; }
-  .seller .role { font-size: 7.6pt; text-transform: uppercase; letter-spacing: .6px; color: #64748b; font-weight: 700; }
-  .seller .name { font-weight: 700; font-size: 10pt; }
-  .seller .line { font-size: 8.6pt; color: #334155; }
-  h2 { font-size: 10pt; margin: 11px 0 5px; padding-bottom: 3px; border-bottom: 1.5px solid #14181f; }
+  .parties { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 10px 0 4px; }
+  .party { border: 1px solid #cbd5e1; border-radius: 6px; padding: 7px 11px; background: #f8fafc; display: flex; flex-direction: column; gap: 1px; }
+  .party .field { margin-top: 3px; }
+  .party .role { font-size: 7.6pt; text-transform: uppercase; letter-spacing: .6px; color: #64748b; font-weight: 700; }
+  .party .name { font-weight: 700; font-size: 10pt; }
+  .party .line { font-size: 8.6pt; color: #334155; line-height: 1.25; }
+  .party .grid { gap: 4px 12px; }
+  h2 { font-size: 10pt; margin: 9px 0 5px; padding-bottom: 3px; border-bottom: 1.5px solid #14181f; }
   h2.first { margin-top: 0; }
   h3 { font-size: 9.2pt; margin: 9px 0 3px; }
   .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 18px; }
@@ -338,33 +341,36 @@ export function buildKaufvertragHtml(bike: Bike, detailsInput?: BikeDetails): st
 
   <div class="sheet">
     <h1>Kaufvertrag über ein gebrauchtes Fahrrad</h1>
-    <div class="subtitle">Gewerbliches Angebot${isLieferung ? ' · Lieferung' : ''}</div>
+    ${isLieferung ? '<div class="subtitle">Lieferung</div>' : ''}
 
-    <div class="seller">
-      <div class="role">Verkäufer (gewerblich)</div>
-      <div class="name">${esc(SELLER.name)}</div>
-      <div class="line">${esc(SELLER.tagline)}</div>
-      <div class="line">${esc(SELLER.address)} · Telefon: ${esc(SELLER.phone)}</div>
-      <div class="line">${esc(SELLER.taxNote)}</div>
-    </div>
-
-    <h2>Käufer</h2>
-    <div class="grid">
-      ${field('Name, Vorname', esc(d.kaeuferName), { wide: true })}
-      ${field('Anschrift (Straße, PLZ, Ort)', esc(d.kaeuferAnschrift), { wide: true })}
-      ${field('Telefon', esc(d.kaeuferKontakt))}
-      ${field('E-Mail', esc(d.kaeuferEmail))}
+    <div class="parties">
+      <div class="party">
+        <div class="role">Verkäufer</div>
+        <div class="name">${esc(SELLER.name)}</div>
+        <div class="line">${esc(SELLER.tagline)}</div>
+        <div class="line">${esc(SELLER.address)}</div>
+        <div class="line">Telefon: ${esc(SELLER.phone)}</div>
+        <div class="line">${esc(SELLER.taxNote)}</div>
+      </div>
+      <div class="party">
+        <div class="role">Käufer</div>
+        ${field('Name, Vorname', esc(d.kaeuferName))}
+        ${field('Anschrift (Straße, PLZ, Ort)', esc(d.kaeuferAnschrift))}
+        <div class="grid">
+          ${field('Telefon', esc(d.kaeuferKontakt))}
+          ${field('E-Mail', esc(d.kaeuferEmail))}
+        </div>
+      </div>
     </div>
 
     <h2>1. Kaufgegenstand (Fahrrad)</h2>
     <div class="grid">
-      ${field('Marke / Modell', markeModell, { wide: true })}
+      ${field('Marke / Modell', markeModell)}
       ${field('Rahmennummer', esc(d.rahmennummer))}
       ${field('Laufradgröße (Zoll)', esc(d.laufradgroesse))}
       ${field('Rahmenhöhe / Größe', esc(d.rahmenhoehe))}
       ${field('Farbe', esc(d.farbe))}
       ${field('Gangschaltung / Anzahl Gänge', esc(gangText))}
-      ${field('ca. Baujahr', esc(d.baujahr))}
       ${field('Mitverkauftes Zubehör (z. B. Schloss, Beleuchtung, Gepäckträger, Ständer)', esc(d.zubehoer), { wide: true })}
     </div>
 
@@ -397,8 +403,8 @@ export function buildKaufvertragHtml(bike: Bike, detailsInput?: BikeDetails): st
     ${verjaehrungsBox}
 
     <div class="sign">
-      <div class="slot">Unterschrift Verkäufer</div>
       <div class="slot">Unterschrift Käufer</div>
+      <div class="slot">Unterschrift Verkäufer</div>
     </div>
     ${footer}
   </div>
