@@ -298,6 +298,10 @@ export function buildKaufvertragHtml(bike: Bike, detailsInput?: BikeDetails): st
   .party .name { font-weight: 700; font-size: 10pt; }
   .party .line { font-size: 8.6pt; color: #334155; line-height: 1.25; }
   .party .grid { gap: 4px 12px; }
+  /* Verkäufer-Kasten füllt die Höhe des Käufer-Kastens: größere Schrift, gleichmäßig verteilt. */
+  .party.seller { justify-content: space-between; }
+  .party.seller .name { font-size: 11.5pt; }
+  .party.seller .line { font-size: 9.6pt; }
   h2 { font-size: 10pt; margin: 9px 0 5px; padding-bottom: 3px; border-bottom: 1.5px solid #14181f; }
   h2.first { margin-top: 0; }
   h3 { font-size: 9.2pt; margin: 9px 0 3px; }
@@ -344,7 +348,7 @@ export function buildKaufvertragHtml(bike: Bike, detailsInput?: BikeDetails): st
     ${isLieferung ? '<div class="subtitle">Lieferung</div>' : ''}
 
     <div class="parties">
-      <div class="party">
+      <div class="party seller">
         <div class="role">Verkäufer</div>
         <div class="name">${esc(SELLER.name)}</div>
         <div class="line">${esc(SELLER.tagline)}</div>
