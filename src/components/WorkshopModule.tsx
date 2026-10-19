@@ -78,6 +78,7 @@ export function WorkshopModule({ bikes, inventoryItems, groupOrders = [], receip
 
   // Stopwatch state
   const [isRunning, setIsRunning] = useState(false);
+  const [editingLogId, setEditingLogId] = useState<string | null>(null);
   const [time, setTime] = useState(0);
   const [manualTime, setManualTime] = useState('');
   const [lastResetTime, setLastResetTime] = useState<{ time: number, workLogs: WorkLog[] } | null>(null);
@@ -319,6 +320,24 @@ export function WorkshopModule({ bikes, inventoryItems, groupOrders = [], receip
       l.id === logId ? { ...l, note: note.trim() } : l
     );
     updateBike(activeBike.id, { workLogs: updatedWorkLogs });
+  };
+
+  // Datum/Uhrzeit einer einzelnen Zeit im Arbeits-Protokoll ändern (Wert aus <input type="datetime-local">)
+  const updateWorkLogTimestamp = (logId: string, localValue: string) => {
+    if (!activeBike || !localValue) return;
+    const d = new Date(localValue);
+    if (isNaN(d.getTime())) return;
+    const updatedWorkLogs = (activeBike.workLogs || [])
+      .map(l => (l.id === logId ? { ...l, timestamp: d.toISOString() } : l))
+      .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+    updateBike(activeBike.id, { workLogs: updatedWorkLogs });
+  };
+
+  // ISO → "yyyy-mm-ddThh:mm" in lokaler Zeit, für datetime-local
+  const toLocalInput = (iso: string) => {
+    const d = new Date(iso);
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
   };
 
   const handleAddExpense = () => {
@@ -1082,9 +1101,31 @@ export function WorkshopModule({ bikes, inventoryItems, groupOrders = [], receip
                     [...(activeBike.workLogs || [])].reverse().map(log => (
                       <div key={log.id} className="p-2.5 rounded-lg bg-slate-800/50 hover:bg-slate-800 transition-colors group">
                         <div className="flex items-center justify-between">
-                          <span className="text-sm text-slate-300">
-                            {new Date(log.timestamp).toLocaleDateString('de-DE')} {new Date(log.timestamp).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}
-                          </span>
+                          {editingLogId === log.id ? (
+                            <input
+                              type="datetime-local"
+                              autoFocus
+                              defaultValue={toLocalInput(log.timestamp)}
+                              onBlur={(e) => {
+                                if (e.target.value !== toLocalInput(log.timestamp)) updateWorkLogTimestamp(log.id, e.target.value);
+                                setEditingLogId(null);
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') e.currentTarget.blur();
+                                if (e.key === 'Escape') setEditingLogId(null);
+                              }}
+                              className="bg-slate-900 border border-orange-500/50 rounded px-2 py-0.5 text-sm text-slate-200 focus:outline-none [color-scheme:dark]"
+                            />
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => setEditingLogId(log.id)}
+                              className="text-sm text-slate-300 hover:text-orange-400 underline decoration-dotted decoration-slate-600 hover:decoration-orange-400 underline-offset-4 transition-colors"
+                              title="Datum und Uhrzeit ändern"
+                            >
+                              {new Date(log.timestamp).toLocaleDateString('de-DE')} {new Date(log.timestamp).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}
+                            </button>
+                          )}
                           <div className="flex items-center space-x-3">
                             <span className="text-sm font-mono text-slate-400">
                               {formatTime(log.durationSeconds)}

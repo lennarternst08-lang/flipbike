@@ -95,7 +95,6 @@ export function BikeDetailsFields({ value, onChange, includeContract = false }: 
         {renderField('Marke', 'marke', { placeholder: 'z.B. Cube' })}
         {renderField('Modell', 'modell', { placeholder: 'z.B. Aim Pro' })}
         {renderField('Rahmennummer', 'rahmennummer', { placeholder: 'eingestanzte Nr.' })}
-        {renderField('ca. Baujahr', 'baujahr', { placeholder: 'z.B. 2019' })}
         {renderField('Laufradgröße (Zoll)', 'laufradgroesse', { placeholder: 'z.B. 28"' })}
         {renderField('Rahmenhöhe / Größe', 'rahmenhoehe', { placeholder: 'z.B. 54 cm / M' })}
         {renderField('Farbe', 'farbe', { placeholder: 'z.B. mattschwarz' })}
