@@ -6,7 +6,12 @@
 //
 //   Ergebnis:
 //     ai-report-latest.json          aktueller Stand (minifiziert, gitignoriert)
+//     ai-report-14tage.json          nur die letzten 14 Tage + Ausgangslage (aus dem Archiv)
 //     ai-report-archiv/<datum>.json  Tageskopie, damit man später zurückschauen kann
+//
+//   Seit 07.11.2026 baut den Report die FLIPBIKE-App (app/web/src/alt/lib/aiReport.ts, v2.0) – dieselbe
+//   Funktion wie der Download im Profil-Menü der App. src/lib/aiReport.ts dieser Seite bleibt für deren
+//   eigenen Menüpunkt auf v1.5.
 //
 //   Exit-Codes (der Batch wertet sie aus):
 //     0  = Report geschrieben
@@ -23,7 +28,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { initializeApp, cert } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
-import { buildAiReport } from '../src/lib/aiReport.ts';
+import { buildAiReport, buildAiReportZeitraum } from '../../app/web/src/alt/lib/aiReport.ts';
 import { isExcludedDoc } from '../src/lib/flyerLeads.ts';
 
 const PROJECT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -32,6 +37,8 @@ const SAFE_DIR = path.join(HOME, '.flipbike');
 const SAFE_KEY = path.join(SAFE_DIR, 'firebase-sa.json');
 const SAFE_CFG = path.join(SAFE_DIR, 'config.json');
 const LATEST = path.join(PROJECT, 'ai-report-latest.json');
+const ZEITRAUM = path.join(PROJECT, 'ai-report-14tage.json');
+const ZEITRAUM_TAGE = 14;
 const ARCHIV = path.join(PROJECT, 'ai-report-archiv');
 const ARCHIV_TAGE = 60;
 
@@ -151,6 +158,22 @@ async function bestimmeUid(db: FirebaseFirestore.Firestore): Promise<string | un
   return sortiert[0][0];
 }
 
+/** Kennzahlen aus dem Archiv: Stand vom Tag vor dem Zeitraum, sonst der nächstältere. */
+function archivStand(tage: number): { datum: string; stats: any } | null {
+  const ziel = new Date();
+  ziel.setDate(ziel.getDate() - tage);
+  const p = (n: number) => String(n).padStart(2, '0');
+  const zielTag = `${ziel.getFullYear()}-${p(ziel.getMonth() + 1)}-${p(ziel.getDate())}`;
+  let dateien: string[] = [];
+  try { dateien = fs.readdirSync(ARCHIV).filter((n) => /^ai_report_\d{4}-\d{2}-\d{2}\.json$/.test(n)).sort(); } catch { return null; }
+  const passend = dateien.filter((n) => n.slice(10, 20) <= zielTag).pop();
+  if (!passend) return null;
+  try {
+    const r = JSON.parse(fs.readFileSync(path.join(ARCHIV, passend), 'utf8'));
+    return { datum: passend.slice(10, 20), stats: r.stats ?? null };
+  } catch { return null; }
+}
+
 async function main(): Promise<number> {
   const sa = findServiceAccount();
   if (!sa) {
@@ -203,7 +226,7 @@ async function main(): Promise<number> {
   // Die Flyer-Historie ist im Browser nach Zeit sortiert - der KI-Report übernimmt sie 1:1.
   flyerHistory.sort((a: any, b: any) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0));
 
-  const report = buildAiReport({
+  const eingabe = {
     bikes: bikes as any,
     inventoryItems: inventoryItems as any,
     groupOrders: orders as any,
@@ -217,10 +240,16 @@ async function main(): Promise<number> {
     flyerHistory: flyerHistory.map((h: any) => ({
       ts: h.ts, action: h.action, name: h.name, flyerCount: h.flyerCount, date: h.date ?? null, status: h.status ?? null,
     })),
-  });
+  };
+  const report = buildAiReport(eingabe);
 
   const str = JSON.stringify(report);
   fs.writeFileSync(LATEST, str);
+
+  // 14-Tage-Report: Ausgangslage = Archivstand vom Tag vor dem Zeitraum (oder der nächstältere)
+  const basis = archivStand(ZEITRAUM_TAGE);
+  const zeitraum = JSON.stringify(buildAiReportZeitraum(eingabe, { tage: ZEITRAUM_TAGE, basis }));
+  fs.writeFileSync(ZEITRAUM, zeitraum);
 
   fs.mkdirSync(ARCHIV, { recursive: true });
   const heute = new Date().toISOString().split('T')[0];
@@ -236,6 +265,7 @@ async function main(): Promise<number> {
 
   const kb = Math.round(str.length / 1024);
   console.log(`Report geschrieben: ${bikes.length} Räder, ${flyerAreas.length} Flyer-Gebiete, ${logs.length} Logzeilen (${kb} KB).`);
+  console.log(`14-Tage-Report: ${Math.round(zeitraum.length / 1024)} KB, Ausgangslage ${basis ? 'vom ' + basis.datum : 'ohne Archivstand'}.`);
   return EXIT_OK;
 }
 

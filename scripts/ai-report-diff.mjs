@@ -63,8 +63,44 @@ const dat = (iso) => {
 };
 
 const laden = (datei) => {
-  try { return JSON.parse(fs.readFileSync(datei, 'utf8')); } catch { return null; }
+  try { return normalisieren(JSON.parse(fs.readFileSync(datei, 'utf8'))); } catch { return null; }
 };
+
+// Report v2.0 (FLIPBIKE-App) lässt leere Felder weg und führt das Protokoll nach Tagen; v1.5 hatte alles
+// ausgeschrieben und ein flaches Protokoll mit ms-Zeitstempeln. Beide werden hier auf dieselbe Form gebracht,
+// damit auch der Vergleich alter Stand (v1.5) → neuer Stand (v2.0) stimmt.
+const MOD_KURZ = { workshop: 'w', tracking: 't', stopwatch: 's', system: 'y' };
+const p2 = (n) => String(n).padStart(2, '0');
+function logsNachTagen(liste) {
+  const sortiert = [...liste].filter((l) => Number.isFinite(l.ts)).sort((a, b) => a.ts - b.ts);
+  const tage = {};
+  let letzt = null;
+  for (const l of sortiert) {
+    const d = new Date(l.ts);
+    const tag = `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`;
+    const zeit = `${p2(d.getHours())}:${p2(d.getMinutes())}`;
+    const mod = MOD_KURZ[l.mod] ?? (l.mod || '');
+    if (letzt && letzt.tag === tag && letzt.m === l.m && letzt.mod === mod) {
+      letzt.zeile[3] = (letzt.zeile[3] || 1) + 1;
+      continue;
+    }
+    const zeile = [zeit, mod, l.m];
+    (tage[tag] ||= []).push(zeile);
+    letzt = { tag, m: l.m, mod, zeile };
+  }
+  return tage;
+}
+function normalisieren(r) {
+  if (!r) return r;
+  const logs = Array.isArray(r.logs) ? logsNachTagen(r.logs) : (r.logs || {});
+  // flach: { tag, zeit, mod, m, n }
+  r.logEintraege = Object.entries(logs).flatMap(([tag, zeilen]) =>
+    zeilen.map((z) => ({ tag, zeit: z[0], mod: z[1], m: z[2], n: z[3] || 1 })));
+  r.bikes = (r.bikes || []).map((b) => ({
+    sp: 0, tp: null, exp: [], wl: [], tz: 0, todos: [], notes: '', acq: null, kv: null, ...b,
+  }));
+  return r;
+}
 
 const byId = (arr, key = 'id') => {
   const m = new Map();
@@ -273,15 +309,15 @@ function main() {
   abschnitt('Tages-To-dos', todos);
 
   // -------------------------------------------------------- Aktivitätsprotokoll
-  const alteLogs = new Set((prev.logs || []).map((l) => `${l.ts}|${l.m}`));
-  const neueLogs = (latest.logs || []).filter((l) => !alteLogs.has(`${l.ts}|${l.m}`))
-    .sort((a, b) => a.ts - b.ts);
+  // Schlüssel Tag + Uhrzeit (Ortszeit) + Text; ein zusammengefasster Eintrag zählt neu, wenn er öfter vorkommt
+  const alteLogs = new Map((prev.logEintraege || []).map((l) => [`${l.tag} ${l.zeit}|${l.m}`, l.n]));
+  const neueLogs = (latest.logEintraege || [])
+    .filter((l) => (alteLogs.get(`${l.tag} ${l.zeit}|${l.m}`) || 0) < l.n)
+    .sort((a, b) => `${a.tag} ${a.zeit}`.localeCompare(`${b.tag} ${b.zeit}`));
+  const MOD_LANG = { w: 'workshop', t: 'tracking', s: 'stopwatch', y: 'system' };
   const logZeilen = neueLogs.slice(-MAX_LOGZEILEN).map((l) => {
-    // Ortszeit, nicht UTC: die Notiz liest ein Mensch in Braunschweig.
-    const d = new Date(l.ts);
-    const p = (n) => String(n).padStart(2, '0');
-    const t = `${p(d.getDate())}.${p(d.getMonth() + 1)}. ${p(d.getHours())}:${p(d.getMinutes())}`;
-    return `- ${t} [${l.mod}] ${l.m}`;
+    const t = `${l.tag.slice(8, 10)}.${l.tag.slice(5, 7)}. ${l.zeit}`;
+    return `- ${t} [${MOD_LANG[l.mod] || l.mod}] ${l.m}${l.n > 1 ? ` (${l.n}×)` : ''}`;
   });
   if (neueLogs.length > MAX_LOGZEILEN) {
     logZeilen.unshift(`- (${neueLogs.length - MAX_LOGZEILEN} ältere Einträge hier weggelassen, die letzten ${MAX_LOGZEILEN} stehen unten)`);
