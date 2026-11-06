@@ -125,7 +125,7 @@ REM     Von dort liest der Drive-Connector von claude.ai sie LIVE - ohne "Sync n
 REM     ai-report-latest.json ist der komplette KI-Report - dieselbe Datei, die der
 REM     Menuepunkt im Browser herunterlaedt. ai-report-neu.md ist die Aenderungsliste
 REM     dazu. Laeuft auch nach einem Abbruch: hochladen schadet nie.
-"%NODE_BIN%" "%PROJECT%\scripts\cloud-copy.mjs" tagesnotiz.md ai-report-latest.json ai-report-neu.md >> "%LOG%" 2>&1
+"%NODE_BIN%" "%PROJECT%\scripts\cloud-copy.mjs" tagesnotiz.md ai-report-latest.json ai-report-14tage.json ai-report-neu.md >> "%LOG%" 2>&1
 
 REM --- Schritt 7: Kontext ins private Repo (Projekt-Wissen, braucht "Sync now"). ---
 REM     Schlaegt das fehl, ist der Lauf trotzdem erfolgreich - die Leads sind schon da.
