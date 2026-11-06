@@ -34,3 +34,6 @@ tagesnotiz.md
 # (Standardplatz: %USERPROFILE%\.flipbike\firebase-sa.json) - hier nur als Netz.
 firebase-sa-path.txt
 *firebase-adminsdk*.json
+
+# 14-Tage-Report (Betriebsdaten, nie ins Repo)
+ai-report-14tage.json
